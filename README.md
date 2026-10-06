@@ -73,7 +73,9 @@ err := mgr.Share(ctx, "lightning:lnbc1...", nearby.ShareOptions{
 	case nearby.PeerConnected:
 		showCode(ev.Code) // the payer sees the same code
 	case nearby.Delivered:
-		markDelivered(ev.Code)
+		markDelivered(ev.Code) // received, not necessarily picked
+	case nearby.Chosen:
+		markPaidSoon(ev.Code) // Share returns nil right after this
 	case nearby.SuspiciousActivity:
 		warn(ev.FailedSessions, ev.Window)
 	}
@@ -115,6 +117,63 @@ The platform also calls three things on the `Manager`:
 - `ProcessAPDU` from its `HostApduService`;
 - `Status` before showing nearby controls at all.
 
+### Several payments in one room
+
+When two payments happen in the same room, a payer that just takes the
+closest payee will sometimes take the wrong one. Instead, collect every
+request in range and let the user pick the one whose code matches the
+screen of the person they're paying:
+
+```go
+var offers []nearby.Received
+err = mgr.Find(ctx, nearby.FindOptions{
+	Collect:  true, // keep going after the first Received
+	Validate: validate,
+}, func(ev nearby.FindEvent) error {
+	if ev, ok := ev.(nearby.Received); ok {
+		offers = append(offers, ev)
+		showPicker(offers) // list each request with its code
+	}
+	return nil
+})
+
+// Once the user picked an offer whose code matches the payee's screen,
+// tell that payee so it stops offering the request to others.
+err = mgr.Choose(ctx, picked.PeerID, picked.ChosenToken)
+```
+
+- **Payee.** It keeps sharing after a `Delivered`, so the other payer in the
+  room can still get the request. It stops (and `Share` returns nil) when a
+  payer sends `Chosen`. Set `ShareOptions.ContinueAfterChosen` for a request
+  several people pay, such as a donation address.
+- **Choose.** It reconnects to the payee and sends the session's token. Only
+  the two ends of the session can compute it. It retries a few times; the
+  payment never depends on its result.
+- **Busy payees.** A payer that finds a payee busy with another payer tries
+  again after `Params.BusyRetryDelay` instead of skipping it.
+
+### Tuning
+
+Every timeout, the peer-selection heuristics and every rate limit are in
+`Config.Params`. Unset fields keep their defaults (see `DefaultParams`):
+
+```go
+mgr := nearby.New(nearby.Config{
+	Radio: platformRadio,
+	Params: nearby.Params{
+		CollectWindow:        2 * time.Second, // many sharers in range
+		RSSIFloor:            -85,             // larger counter
+		MaxSessionsPerWindow: 60,              // busy shop
+		BusyRetryDelay:       time.Second,
+	},
+})
+```
+
+Raising the rate limits or the suspicious-activity threshold trades
+resistance to code grinding for throughput. The spec's
+[Parameters](spec/blip-nearby-payment-requests.md#parameters) section lists
+the recommended values.
+
 ## Implementing the radio
 
 The radio is a byte pump. Chunking, UUIDs, encryption and timeouts all stay
@@ -135,6 +194,8 @@ What implementations most often get wrong:
   `.withResponse` value is 512 whatever the MTU, and writes above MTU − 3
   turn into prepared writes the payee refuses. Request the largest MTU
   before reporting `OnConnected` on Android.
+- **Reconnecting.** `Connect` must also work for a peer seen earlier whose
+  scan has since stopped, because `Choose` reconnects to the payee.
 - **Callbacks must not block.** The Go callbacks only enqueue. Call them
   from any thread, but never while holding a lock the Go side might need
   through another radio method.

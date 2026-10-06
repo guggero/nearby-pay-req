@@ -169,7 +169,14 @@ The payer:
     (see [Comparison code](#comparison-code)) for the rest of the current
     search.
   - SHOULD skip a payee whose session failed earlier in the same search and
-    try the next candidate.
+    try the next candidate. A payee that answered `ABORT(BUSY)` is not
+    failed: see [ABORT](#abort).
+  - MAY collect the payment requests of several payees in one search, by
+    running a session with each candidate in turn (strongest first) instead
+    of stopping after the first, so its user can pick the request whose
+    code matches the payee they want to pay. Such a payer MUST NOT run a
+    session with a payee it already received a request from in the same
+    search.
 
 Payee selection is a usability heuristic, not a security mechanism. Picking
 the wrong payee is caught by the comparison code.
@@ -192,7 +199,10 @@ The *chunk size* for each direction is `min(512, ATT_MTU − 3)`, where
 The payee:
   - MUST serve at most one payer at a time. A payer that writes while another
     payer's session is active MUST be answered with `ABORT(BUSY)` (if a
-    notification to it is possible) and disconnected.
+    notification to it is possible) and disconnected. A connection whose
+    first message is `CHOSEN` is not a session: it does not count towards
+    this limit or the rate limit below, and SHOULD be answered even while
+    another session is active.
   - MUST rate-limit new sessions. It SHOULD accept at most one new session
     per second and at most 30 per rolling 60 seconds, and SHOULD answer any
     session beyond that limit with `ABORT(BUSY)`.
@@ -248,13 +258,16 @@ rest     body
 | `0x01` | `NOISE_E` | payer → payee | Noise handshake message 1 |
 | `0x02` | `NOISE_E_EE` | payee → payer | Noise handshake message 2; its payload is a TLV stream |
 | `0x03` | `SEALED` | both | a Noise transport message whose plaintext is a TLV stream |
+| `0x04` | `CHOSEN` | both | payer → payee: a 32-byte `chosen_token`; payee → payer: empty, confirming it (see [Choosing a request](#choosing-a-request)) |
 | `0x7f` | `ABORT` | both | plaintext abort reason (see [ABORT](#abort)) |
 
 A receiver:
   - MUST answer a message whose `version` it does not support with
     `ABORT(VERSION_UNSUPPORTED)` and end the session.
   - MUST treat an unknown `type`, or a known type that is not the next one
-    expected in [Session flow](#session-flow), as `PROTOCOL_ERROR`.
+    expected in [Session flow](#session-flow), as `PROTOCOL_ERROR`. As the
+    only exception, a payee accepts `CHOSEN` as the first message on a
+    connection (see [Choosing a request](#choosing-a-request)).
 
 An `ABORT` MUST be processed whatever its `version` byte.
 
@@ -291,6 +304,7 @@ SERVICE_UUID = 7be78411-b151-48bf-a570-252b55847970 (16 bytes, RFC 4122 byte ord
 PROLOGUE     = "nearby-payreq/1" ‖ SERVICE_UUID            (ASCII, 15 + 16 bytes)
 COMMIT_TAG   = "nearby-payreq/1/commit"                    (ASCII)
 CODE_TAG     = "nearby-payreq/1/code"                      (ASCII)
+CHOSEN_TAG   = "nearby-payreq/1/chosen"                    (ASCII)
 ```
 
 #### Noise
@@ -347,7 +361,10 @@ The payee:
   - MUST send `Nb` and `payment_request` in message 4, and only after it
     received message 3.
   - On message 5 with `ack` = 0, SHOULD tell the user the request was
-    delivered. On `ack` = 1, SHOULD treat the session as failed.
+    delivered. On `ack` = 1, SHOULD treat the session as failed. A
+    delivery does not mean the payer's user picked this request; that is
+    signalled separately with `CHOSEN`. The payee SHOULD keep sharing
+    after a delivery until it receives `CHOSEN` or its user stops.
   - SHOULD warn its user if three or more sessions within 60 seconds failed
     after it displayed their code. That pattern is what an attacker
     grinding for a matching code looks like (see
@@ -398,6 +415,56 @@ Both wallets SHOULD present the code in two groups of three digits
 user what the code is for in plain words: the payer's user pays only if the
 two codes are the same.
 
+#### Choosing a request
+
+When the payer's user has confirmed the codes match and picked a request,
+the payer tells that payee, so the payee can stop offering the request to
+other payers in range. Both sides derive a per-session token on message 3
+(payee) and message 4 (payer):
+
+```
+chosen_token = SHA-256(CHOSEN_TAG ‖ h ‖ Na ‖ Nb)   (32 bytes)
+```
+
+`Na` and `Nb` only ever travel encrypted, so only the two ends of a session
+can compute `chosen_token`. It is a different hash of the same inputs as
+`code`, so neither reveals anything about the other.
+
+The payer sends it on a new connection, after the session ended:
+
+```
+   payer                                          payee
+
+1. CHOSEN       chosen_token (32 bytes)  ───────▶
+2.                                       ◀─────── CHOSEN  (empty body)
+   payer disconnects                              payee stops sharing
+```
+
+The payer:
+  - SHOULD send `CHOSEN` once its user confirmed the codes match and picked
+    the request. It MUST NOT send it for a request whose code the user did
+    not confirm.
+  - MUST send `CHOSEN` as the first and only message on a fresh connection,
+    after enabling notifications as for a session, and MUST disconnect once
+    it received the payee's answer or a timeout passed.
+  - MAY retry a few times if the connection fails; it MUST NOT retry after
+    `ABORT(UNKNOWN_SESSION)`.
+  - MUST NOT make the payment depend on the payee's answer. `CHOSEN` is a
+    courtesy to the payee, not part of authenticating the request.
+
+The payee:
+  - MUST remember `chosen_token` for every session that ended with
+    `ack` = 0, for a retention time (2 minutes is RECOMMENDED), and MUST
+    forget all of them when it stops sharing the request.
+  - On `CHOSEN` with a remembered token, MUST answer with an empty `CHOSEN`,
+    MUST forget that token, and SHOULD stop sharing the request (BLE and
+    NFC) and tell its user which session chose it. It MAY keep sharing if
+    the request is meant to be paid more than once.
+  - On `CHOSEN` with any other token, or a body that is not 32 bytes, MUST
+    answer `ABORT(UNKNOWN_SESSION)` or `ABORT(PROTOCOL_ERROR)` respectively
+    and change nothing.
+  - MUST disconnect after answering.
+
 ### ABORT
 
 An `ABORT` body is a two-byte reason code. For `VERSION_UNSUPPORTED`, it is
@@ -411,6 +478,7 @@ followed by one byte: the highest message version the sender supports.
 | 4 | `TIMEOUT` | a step took too long |
 | 5 | `PAYLOAD_REJECTED` | the payer cannot use the payment request it received |
 | 6 | `CANCELLED` | the sender stopped the session on purpose |
+| 7 | `UNKNOWN_SESSION` | the payee does not remember the `chosen_token` of a `CHOSEN` |
 
 `ABORT` is neither encrypted nor authenticated: anyone in radio range can
 inject one.
@@ -422,9 +490,35 @@ A receiver of an `ABORT`:
   - MUST treat an unknown reason code as a generic failure.
 
 A payer receiving `ABORT(BUSY)` SHOULD move on to the next candidate payee and
-MAY retry the same payee later. A payer receiving
+SHOULD retry the same payee after a delay (1.5 seconds is RECOMMENDED), a
+limited number of times (3 is RECOMMENDED). With several payers in one room
+this is what lets each of them get the request in turn. A payer receiving
 `ABORT(VERSION_UNSUPPORTED)` MAY open a new session using the indicated
 version if it supports that version.
+
+### Parameters
+
+The numeric values this document RECOMMENDS are starting points for two
+phones held close together. Radio conditions vary widely between devices
+and rooms, so implementations MAY tune every one of them to their
+environment, and SHOULD let applications do so. In one place:
+
+| Parameter | Recommended | Where |
+|---|---|---|
+| Session timeout | 10 s | [Session flow](#session-flow) |
+| Collection window | 800 ms | [Discovery](#discovery-and-peer-selection) |
+| RSSI smoothing weight | 0.3 | [Discovery](#discovery-and-peer-selection) |
+| Proximity floor | −75 dBm | [Discovery](#discovery-and-peer-selection) |
+| Minimum gap between sessions | 1 s | [Connection setup](#connection-setup) |
+| Sessions per rolling window | 30 per 60 s | [Connection setup](#connection-setup) |
+| Suspicious failures | 3 per 60 s | [Session flow](#session-flow) |
+| Busy retry delay, retries | 1.5 s, 3 | [ABORT](#abort) |
+| `chosen_token` retention | 2 min | [Choosing a request](#choosing-a-request) |
+
+A busy room (a shop counter, an event) typically wants a higher session cap
+and a longer collection window. Any change to the rate limits or the
+suspicious-failure threshold trades resistance against code grinding for
+throughput; see [Security considerations](#security-considerations).
 
 ### NFC carrier
 
@@ -456,6 +550,24 @@ open at the same time. A completed NFC read SHOULD cancel a BLE session that
 is still in progress.
 
 ## Rationale
+
+### Choosing among several requests
+
+Two payments can happen in one room at the same time. A payer that took
+only the strongest payee would sometimes take the wrong one, and the user
+would have to reject it and search again. Collecting every request in range
+and letting the user pick by code avoids that. It does not weaken the code:
+an attacker's request in the list carries a code that matches no payee's
+screen.
+
+A payee that keeps sharing after a delivery is what lets the second payer
+in the room get the same request; `CHOSEN` is what lets it stop once the
+right payer has it. It travels on a new connection rather than keeping the
+session's link open while the user compares codes, because an open link
+would hold the payee's single session slot, and many phones handle several
+simultaneous BLE links poorly. The token is derived rather than random, so
+neither side has to send anything extra during the session, and it is only
+known to the two ends because it depends on both encrypted nonces.
 
 ### Prior art
 
@@ -612,6 +724,8 @@ distinguishable groups.
 | Tracking through stable identifiers | No static keys, no local name, no manufacturer or service data, private addresses, advertising only while a request is displayed | The shared service UUID identifies the protocol, not the wallet |
 | Pairing prompt abuse | No attribute requires security, so the OS never offers pairing | none |
 | Malformed input (memory exhaustion, parser attacks) | Bounded message length (12288 bytes), bounded payload (8192 bytes), strict chunk and TLV rules, one payer at a time, session timeout | none material |
+| A forged `CHOSEN`, to stop a payee from sharing | `chosen_token` depends on both nonces, which only travel encrypted, so only a payer that completed a session with the payee can produce it | An attacker that completes its own session as a payer can stop the share, as it could by holding the session slot; the payee's user can share again, and QR and NFC still work |
+| Replay of an observed `CHOSEN` | The payee forgets a token on first use, and an eavesdropper only sees a token as it is used | none |
 | A forged `ABORT` | `ABORT` can only end a session, never change what it delivered | An attacker in range can keep disrupting sessions; QR and NFC still work |
 | Slot holding: an attacker connects and stalls | One payer at a time, the session timeout, rate limits | A persistent attacker in range can keep the BLE share busy; QR and NFC still work |
 | NFC relay of the payee's tag to a distant payer | none needed: a relay delivers the payee's genuine request | none |
@@ -646,6 +760,9 @@ payee falls back to the camera.
 Future changes are accommodated as follows:
 
 * optional fields as odd TLV types, without a version change;
+* new message types that only a peer opting in sends first, such as
+  `CHOSEN`: a payee that predates them answers `ABORT(PROTOCOL_ERROR)`,
+  which the sender treats as "not supported";
 * incompatible changes inside the message layer through the `version` byte
   and `ABORT(VERSION_UNSUPPORTED)`;
 * a change to the chunk layer or GATT layout through a new service UUID.
@@ -688,6 +805,7 @@ payee ephemeral pubkey  = 0dc73519d59fce9ea4c41aac7ead51892ad26203c3d1c5f97e62f9
 C                       = 002f25f185171dc6801d15f4c59615092e09802699c6318c5122e1c56af27c09
 h                       = 474cc501a595d09569ece7d74a261ee130384d8427e45aa8842b2905a0545779
 code                    = 315835
+chosen_token            = 6a0a51f15e5026bf4f99bcb7d4026869e8e86bb01714d6bb79a48b1940616388
 ```
 
 Messages (header included, before chunking):
@@ -715,6 +833,16 @@ dbd5acd78b31f4f195
 0103f22b86b0298c36571f62b4509e4870fbc4e361
 ```
 
+`CHOSEN` on a later connection, and the payee's confirmation:
+
+```
+CHOSEN        (34 bytes)
+01046a0a51f15e5026bf4f99bcb7d4026869e8e86bb01714d6bb79a48b1940616388
+
+CHOSEN        (2 bytes, confirmation)
+0104
+```
+
 Message 4 split at a chunk size of 20 bytes:
 
 ```
@@ -734,12 +862,14 @@ Message 4 split at a chunk size of 20 bytes:
 ABORT(PROTOCOL_ERROR)                     017f0001
 ABORT(VERSION_UNSUPPORTED), max version 1 017f000201
 ABORT(BUSY)                               017f0003
+ABORT(UNKNOWN_SESSION)                    017f0007
 ```
 
 ### More vectors
 
 [`vectors.json`](vectors.json) holds the exchange above plus five more, with
-every message and the chunking of message 4 at chunk sizes 20, 182 and 512:
+every message, the chunking of message 4 at chunk sizes 20, 182 and 512, and
+the `chosen_token` with its `CHOSEN` messages:
 
 | Name | Payload | Payload bytes | Message 4 bytes |
 |---|---|---|---|
