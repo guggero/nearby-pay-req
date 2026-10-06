@@ -11,6 +11,9 @@ const (
 
 	// messageHeaderLen is the version + type prefix of every message.
 	messageHeaderLen = 2
+
+	// ChosenTokenLen is the length of the token a CHOSEN message carries.
+	ChosenTokenLen = 32
 )
 
 // MessageType identifies what a message body carries.
@@ -28,6 +31,12 @@ const (
 	// TypeSealed is a Noise transport message carrying a TLV stream.
 	TypeSealed MessageType = 0x03
 
+	// TypeChosen opens a connection of its own, after a delivered
+	// session, to tell the payee its request was picked: the body is
+	// the 32-byte chosen token of that session. The payee answers with
+	// an empty TypeChosen to confirm, or ABORT(UNKNOWN_SESSION).
+	TypeChosen MessageType = 0x04
+
 	// TypeAbort is a plaintext, unauthenticated session abort. It can
 	// only ever end a session, never change what a session delivered.
 	TypeAbort MessageType = 0x7f
@@ -44,6 +53,9 @@ func (t MessageType) String() string {
 
 	case TypeSealed:
 		return "SEALED"
+
+	case TypeChosen:
+		return "CHOSEN"
 
 	case TypeAbort:
 		return "ABORT"
@@ -77,6 +89,10 @@ const (
 
 	// AbortCancelled means the sender stopped the session on purpose.
 	AbortCancelled AbortReason = 6
+
+	// AbortUnknownSession means a CHOSEN token matches no session the
+	// payee delivered recently, or the payee no longer shares.
+	AbortUnknownSession AbortReason = 7
 )
 
 // String returns a short name for logs.
@@ -99,6 +115,9 @@ func (r AbortReason) String() string {
 
 	case AbortCancelled:
 		return "cancelled"
+
+	case AbortUnknownSession:
+		return "unknown session"
 
 	default:
 		return fmt.Sprintf("unknown(%d)", uint16(r))
@@ -161,4 +180,27 @@ func DecodeAbort(body []byte) (AbortReason, byte, error) {
 	}
 
 	return reason, maxVersion, nil
+}
+
+// EncodeChosen builds the payer's CHOSEN message for a delivered session's
+// token.
+func EncodeChosen(token [ChosenTokenLen]byte) []byte {
+	return EncodeMessage(TypeChosen, token[:])
+}
+
+// EncodeChosenAck builds the payee's confirmation of a CHOSEN message.
+func EncodeChosenAck() []byte {
+	return EncodeMessage(TypeChosen, nil)
+}
+
+// DecodeChosen parses the body of the payer's CHOSEN message.
+func DecodeChosen(body []byte) ([ChosenTokenLen]byte, error) {
+	var token [ChosenTokenLen]byte
+	if len(body) != ChosenTokenLen {
+		return token, fmt.Errorf("%w: chosen token of %d bytes",
+			ErrProtocol, len(body))
+	}
+	copy(token[:], body)
+
+	return token, nil
 }

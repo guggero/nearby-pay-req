@@ -84,8 +84,9 @@ func onlyMessage(t *testing.T, out Output) []byte {
 type transcript struct {
 	noiseE, noiseEEE, payerNonce, reveal, ack []byte
 
-	payerCode, payeeCode string
-	received             string
+	payerCode, payeeCode   string
+	payerToken, payeeToken *[wire.ChosenTokenLen]byte
+	received               string
 }
 
 // runExchange drives a complete, successful exchange.
@@ -113,11 +114,13 @@ func runExchange(t *testing.T, payer *PayerSession,
 	require.NoError(t, err)
 	tr.reveal = onlyMessage(t, out)
 	tr.payeeCode = out.Code
+	tr.payeeToken = out.ChosenToken
 
 	out, err = payer.Handle(tr.reveal)
 	require.NoError(t, err)
 	require.Empty(t, out.Send)
 	tr.payerCode = out.Code
+	tr.payerToken = out.ChosenToken
 	tr.received = out.PaymentRequest
 
 	out, err = payer.Accept()
@@ -160,6 +163,10 @@ func TestExchange(t *testing.T) {
 		require.Len(t, tr.payerCode, 6)
 		require.Equal(t, tr.payeeCode, tr.payerCode)
 		require.Equal(t, request, tr.received)
+
+		// Both ends derive the same chosen token.
+		require.NotNil(t, tr.payerToken)
+		require.Equal(t, tr.payeeToken, tr.payerToken)
 
 		// The largest request still fits one message.
 		require.LessOrEqual(t, len(tr.reveal), wire.MaxMessageLen)

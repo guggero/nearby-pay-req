@@ -205,6 +205,7 @@ func (s *PayerSession) handleReveal(msg wire.Message) (Output, error) {
 
 	return Output{
 		Code:           comparisonCode(s.hs.ChannelBinding(), s.na, nb),
+		ChosenToken:    chosenToken(s.hs.ChannelBinding(), s.na, nb),
 		PaymentRequest: paymentRequest,
 	}, nil
 }

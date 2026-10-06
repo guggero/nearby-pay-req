@@ -72,6 +72,9 @@ var (
 	// codeTag domain-separates the comparison code.
 	codeTag = []byte("nearby-payreq/1/code")
 
+	// chosenTag domain-separates the chosen token.
+	chosenTag = []byte("nearby-payreq/1/chosen")
+
 	// cipherSuite is the Noise suite both sides use.
 	cipherSuite = noise.NewCipherSuite(
 		noise.DH25519, noise.CipherChaChaPoly, noise.HashSHA256,
@@ -172,6 +175,13 @@ type Output struct {
 	// Code is set once the comparison code is known.
 	Code string
 
+	// ChosenToken is set together with Code. A payer whose user picked
+	// this session's request sends it in a CHOSEN message on a later
+	// connection; the payee recognises the session by it. Only the two
+	// ends of the session can compute it, because it depends on both
+	// nonces, which only ever travel encrypted.
+	ChosenToken *[wire.ChosenTokenLen]byte
+
 	// PaymentRequest is set on the payer once the request arrived.
 	PaymentRequest string
 
@@ -241,6 +251,24 @@ func comparisonCode(handshakeHash []byte, na,
 	sum := h.Sum(nil)
 
 	return fmt.Sprintf("%06d", binary.BigEndian.Uint32(sum)%codeModulus)
+}
+
+// chosenToken derives the token that identifies a delivered session in a
+// later CHOSEN message, from the same inputs as the code but under its own
+// tag, so neither reveals anything about the other.
+func chosenToken(handshakeHash []byte, na,
+	nb [nonceLen]byte) *[wire.ChosenTokenLen]byte {
+
+	h := sha256.New()
+	h.Write(chosenTag)
+	h.Write(handshakeHash)
+	h.Write(na[:])
+	h.Write(nb[:])
+
+	var token [wire.ChosenTokenLen]byte
+	copy(token[:], h.Sum(nil))
+
+	return &token
 }
 
 // ValidatePaymentRequest checks what the sealed payload may carry:

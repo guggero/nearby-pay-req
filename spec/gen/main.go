@@ -18,7 +18,9 @@ import (
 	"github.com/flynn/noise"
 )
 
-var serviceUUID = mustHex("7be78411b15148bfa570252b55847970")
+var (
+	serviceUUID = mustHex("7be78411b15148bfa570252b55847970")
+)
 
 func mustHex(s string) []byte {
 	b, err := hex.DecodeString(s)
@@ -45,10 +47,13 @@ func bigSize(v uint64) []byte {
 	switch {
 	case v < 0xfd:
 		return []byte{byte(v)}
+
 	case v <= 0xffff:
 		return binary.BigEndian.AppendUint16([]byte{0xfd}, uint16(v))
+
 	case v <= 0xffffffff:
 		return binary.BigEndian.AppendUint32([]byte{0xfe}, uint32(v))
+
 	default:
 		return binary.BigEndian.AppendUint64([]byte{0xff}, v)
 	}
@@ -97,7 +102,7 @@ func chunk(m []byte, size int) [][]byte {
 	return out
 }
 
-type tags struct{ prologue, commit, code string }
+type tags struct{ prologue, commit, code, chosen string }
 
 type vector struct {
 	Name           string `json:"name"`
@@ -119,6 +124,10 @@ type vector struct {
 	Msg4 string `json:"msg4_reveal"`
 	Msg5 string `json:"msg5_ack"`
 
+	ChosenToken string `json:"chosen_token"`
+	ChosenMsg   string `json:"chosen_msg"`
+	ChosenAck   string `json:"chosen_ack"`
+
 	RevealChunks map[int][]string `json:"msg4_chunks"`
 }
 
@@ -126,13 +135,16 @@ func run(tg tags, name, req string, ePayer, ePayee, na, nb []byte,
 	chunkSizes []int) vector {
 
 	prologue := append([]byte(tg.prologue), serviceUUID...)
-	cs := noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly,
-		noise.HashSHA256)
+	cs := noise.NewCipherSuite(
+		noise.DH25519, noise.CipherChaChaPoly, noise.HashSHA256,
+	)
 	mk := func(init bool, e []byte) *noise.HandshakeState {
 		hs, err := noise.NewHandshakeState(noise.Config{
-			CipherSuite: cs, Random: bytes.NewReader(e),
-			Pattern: noise.HandshakeNN, Initiator: init,
-			Prologue: prologue,
+			CipherSuite: cs,
+			Random:      bytes.NewReader(e),
+			Pattern:     noise.HandshakeNN,
+			Initiator:   init,
+			Prologue:    prologue,
 		})
 		if err != nil {
 			panic(err)
@@ -147,8 +159,9 @@ func run(tg tags, name, req string, ePayer, ePayee, na, nb []byte,
 	check(err)
 
 	ch := sha256.Sum256(append([]byte(tg.commit), nb...))
-	m2, pyeRecv, pyeSend, err := payee.WriteMessage(nil,
-		tlvStream(rec{0, ch[:]}))
+	m2, pyeRecv, pyeSend, err := payee.WriteMessage(nil, tlvStream(
+		rec{0, ch[:]},
+	))
 	check(err)
 	p2, pyrSend, pyrRecv, err := payer.ReadMessage(nil, m2)
 	check(err)
@@ -160,8 +173,9 @@ func run(tg tags, name, req string, ePayer, ePayee, na, nb []byte,
 	check(err)
 	_, err = pyeRecv.Decrypt(nil, nil, c3)
 	check(err)
-	c4, err := pyeSend.Encrypt(nil, nil,
-		tlvStream(rec{4, nb}, rec{6, []byte(req)}))
+	c4, err := pyeSend.Encrypt(nil, nil, tlvStream(
+		rec{4, nb}, rec{6, []byte(req)},
+	))
 	check(err)
 	_, err = pyrRecv.Decrypt(nil, nil, c4)
 	check(err)
@@ -177,10 +191,21 @@ func run(tg tags, name, req string, ePayer, ePayee, na, nb []byte,
 	hc.Write(h)
 	hc.Write(na)
 	hc.Write(nb)
-	code := fmt.Sprintf("%06d", binary.BigEndian.Uint32(hc.Sum(nil))%1_000_000)
+	code := fmt.Sprintf("%06d", binary.BigEndian.Uint32(hc.Sum(
+		nil,
+	))%1_000_000)
+
+	// The chosen token: same inputs as the code, its own tag.
+	ht := sha256.New()
+	ht.Write([]byte(tg.chosen))
+	ht.Write(h)
+	ht.Write(na)
+	ht.Write(nb)
+	token := ht.Sum(nil)
 
 	v := vector{
-		Name: name, PaymentRequest: req,
+		Name:               name,
+		PaymentRequest:     req,
 		PayerEphemeralPriv: hex.EncodeToString(ePayer),
 		PayeeEphemeralPriv: hex.EncodeToString(ePayee),
 		PayerNonce:         hex.EncodeToString(na),
@@ -194,12 +219,16 @@ func run(tg tags, name, req string, ePayer, ePayee, na, nb []byte,
 		Msg3:               hex.EncodeToString(msg(0x03, c3)),
 		Msg4:               hex.EncodeToString(msg(0x03, c4)),
 		Msg5:               hex.EncodeToString(msg(0x03, c5)),
+		ChosenToken:        hex.EncodeToString(token),
+		ChosenMsg:          hex.EncodeToString(msg(0x04, token)),
+		ChosenAck:          hex.EncodeToString(msg(0x04, nil)),
 		RevealChunks:       map[int][]string{},
 	}
 	for _, s := range chunkSizes {
 		for _, c := range chunk(msg(0x03, c4), s) {
-			v.RevealChunks[s] = append(v.RevealChunks[s],
-				hex.EncodeToString(c))
+			v.RevealChunks[s] = append(
+				v.RevealChunks[s], hex.EncodeToString(c),
+			)
 		}
 	}
 	return v
@@ -223,8 +252,18 @@ func inputs() []input {
 			"bitcoin:bc1qar0srrr7xfkvy5l643lydnw9re59gtzz" +
 				"wf5mdq?amount=0.0001&lightning=lnbc1" +
 				strings.Repeat("z", 300)},
-		{"ark-bare", "payer-4", "payee-4", "tark1" + strings.Repeat("x", 120)},
-		{"bolt12-offer", "payer-5", "payee-5", "lno1" + strings.Repeat("r", 200)},
+		{
+			"ark-bare", "payer-4", "payee-4",
+			"tark1" + strings.Repeat(
+				"x", 120,
+			),
+		},
+		{
+			"bolt12-offer", "payer-5", "payee-5",
+			"lno1" + strings.Repeat(
+				"r", 200,
+			),
+		},
 	}
 }
 
@@ -237,14 +276,21 @@ func keys(in input) (ePayer, na, nb, ePayee []byte) {
 }
 
 func main() {
-	t := tags{"nearby-payreq/1", "nearby-payreq/1/commit", "nearby-payreq/1/code"}
+	t := tags{
+		"nearby-payreq/1", "nearby-payreq/1/commit",
+		"nearby-payreq/1/code", "nearby-payreq/1/chosen",
+	}
 	var out []vector
-	all := append([]input{{"inline-short", "payer-0", "payee-0",
-		"lightning:lnbc1" + strings.Repeat("q", 60)}}, inputs()...)
+	all := append(
+		[]input{{"inline-short", "payer-0", "payee-0",
+			"lightning:lnbc1" + strings.Repeat("q", 60)}}, inputs()...,
+	)
 	for _, in := range all {
 		ePayer, na, nb, ePayee := keys(in)
-		out = append(out, run(t, in.name, in.req, ePayer, ePayee,
-			na, nb, []int{20, 182, 512}))
+		out = append(out, run(
+			t, in.name, in.req, ePayer, ePayee, na, nb,
+			[]int{20, 182, 512},
+		))
 	}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")

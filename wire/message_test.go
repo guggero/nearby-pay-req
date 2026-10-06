@@ -104,3 +104,31 @@ func TestTLVOddEven(t *testing.T) {
 	_, err = DecodeTLV(withOdd[:10], tlv.MakePrimitiveRecord(2, &got))
 	require.ErrorIs(t, err, ErrProtocol)
 }
+
+// TestChosen checks the CHOSEN encoding and that only a full token decodes.
+func TestChosen(t *testing.T) {
+	t.Parallel()
+
+	var token [ChosenTokenLen]byte
+	for i := range token {
+		token[i] = byte(i)
+	}
+
+	msg, err := DecodeMessage(EncodeChosen(token))
+	require.NoError(t, err)
+	require.Equal(t, TypeChosen, msg.Type)
+	require.Equal(t, Version1, msg.Version)
+	got, err := DecodeChosen(msg.Body)
+	require.NoError(t, err)
+	require.Equal(t, token, got)
+
+	ack, err := DecodeMessage(EncodeChosenAck())
+	require.NoError(t, err)
+	require.Equal(t, TypeChosen, ack.Type)
+	require.Empty(t, ack.Body)
+
+	for _, n := range []int{0, 31, 33} {
+		_, err := DecodeChosen(make([]byte, n))
+		require.ErrorIs(t, err, ErrProtocol)
+	}
+}

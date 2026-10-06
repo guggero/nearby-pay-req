@@ -41,6 +41,10 @@ type specVector struct {
 	Msg4 string `json:"msg4_reveal"`
 	Msg5 string `json:"msg5_ack"`
 
+	ChosenToken string `json:"chosen_token"`
+	ChosenMsg   string `json:"chosen_msg"`
+	ChosenAck   string `json:"chosen_ack"`
+
 	// Msg4Chunks maps a chunk size to the reveal message's chunks.
 	Msg4Chunks map[string][]string `json:"msg4_chunks"`
 }
@@ -110,6 +114,19 @@ func TestSpecVectors(t *testing.T) {
 			require.Equal(t, v.Code, tr.payerCode)
 			require.Equal(t, v.Code, tr.payeeCode)
 			require.Equal(t, v.PaymentRequest, tr.received)
+
+			// Both ends derive the chosen token, and the CHOSEN
+			// exchange that carries it encodes as specified.
+			require.Equal(t, v.ChosenToken, hex.EncodeToString(
+				tr.payerToken[:],
+			))
+			require.Equal(t, tr.payerToken, tr.payeeToken)
+			require.Equal(t, v.ChosenMsg, hex.EncodeToString(
+				wire.EncodeChosen(*tr.payerToken),
+			))
+			require.Equal(t, v.ChosenAck, hex.EncodeToString(
+				wire.EncodeChosenAck(),
+			))
 
 			// The commitment and the code are pure functions of
 			// the nonces and the handshake hash.

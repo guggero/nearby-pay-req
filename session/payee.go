@@ -186,8 +186,9 @@ func (s *PayeeSession) handlePayerNonce(msg wire.Message) (Output, error) {
 	s.state = payeeAwaitAck
 
 	return Output{
-		Send: [][]byte{reveal},
-		Code: comparisonCode(s.hs.ChannelBinding(), na, s.nb),
+		Send:        [][]byte{reveal},
+		Code:        comparisonCode(s.hs.ChannelBinding(), na, s.nb),
+		ChosenToken: chosenToken(s.hs.ChannelBinding(), na, s.nb),
 	}, nil
 }
 
