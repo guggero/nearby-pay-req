@@ -13,6 +13,12 @@ import (
 	"github.com/lightningnetwork/lnd/clock"
 )
 
+var (
+	// errChosen ends a share whose request a payer chose, unless the share
+	// was told to continue.
+	errChosen = errors.New("payment request chosen")
+)
+
 // centralConn is what the payee knows about one connected payer.
 type centralConn struct {
 	maxChunk int
@@ -26,18 +32,28 @@ type payeeRun struct {
 	deadline  <-chan time.Time
 	codeShown bool
 	lastCode  string
+	token     *[wire.ChosenTokenLen]byte
+}
+
+// deliveredSession is a session whose payer acknowledged the request,
+// remembered so that payer can still say its user chose it.
+type deliveredSession struct {
+	code string
+	at   time.Time
 }
 
 // sharer serves one payment request until its context ends. It runs on the
 // caller's goroutine; radio callbacks reach it through events.
 type sharer struct {
-	radio *radioMux
-	tag   *hce.Tag
-	clock clock.Clock
-	rand  io.Reader
+	radio  *radioMux
+	tag    *hce.Tag
+	clock  clock.Clock
+	rand   io.Reader
+	params Params
 
-	paymentRequest string
-	nfc            bool
+	paymentRequest      string
+	nfc                 bool
+	continueAfterChosen bool
 
 	// availability reports the current BLE sharing availability;
 	// statusChanged nudges a re-check.
@@ -59,13 +75,18 @@ type sharer struct {
 	sessionStarts []time.Time
 	codeFailures  []time.Time
 	warnedAt      time.Time
+
+	// delivered maps the chosen token of every recently delivered
+	// session to what is needed to report a CHOSEN for it.
+	delivered map[[wire.ChosenTokenLen]byte]deliveredSession
 }
 
 // run shares until ctx ends or the stream breaks.
 func (s *sharer) run(ctx context.Context) error {
-	s.events = make(sink, eventQueueLen)
+	s.events = make(sink, s.params.EventQueueLen)
 	s.nfcReads = make(chan struct{}, 1)
 	s.conns = make(map[string]*centralConn)
+	s.delivered = make(map[[wire.ChosenTokenLen]byte]deliveredSession)
 
 	// The NFC tag only needs the message and the preferred-service
 	// registration; it runs independently of Bluetooth.
@@ -269,6 +290,15 @@ func (s *sharer) handleWrite(central string, chunk []byte) error {
 		return nil
 	}
 
+	// A CHOSEN opens a connection of its own and needs no session, so
+	// it is answered even while another payer is mid-session.
+	if s.active == nil || s.active.central != central {
+		parsed, err := wire.DecodeMessage(msg)
+		if err == nil && parsed.Type == wire.TypeChosen {
+			return s.handleChosen(central, conn, parsed)
+		}
+	}
+
 	// Another payer is mid-session: turn this one away.
 	if s.active != nil && s.active.central != central {
 		s.notify(central, conn, wire.EncodeAbort(wire.AbortBusy))
@@ -307,13 +337,21 @@ func (s *sharer) handleWrite(central string, chunk []byte) error {
 			return err
 		}
 		s.active.lastCode = out.Code
+		s.active.token = out.ChosenToken
 	}
 
 	if out.Delivered {
-		code := s.active.lastCode
+		code, token := s.active.lastCode, s.active.token
 		s.active = nil
 		s.radio.native.DisconnectCentral(central)
 		delete(s.conns, central)
+
+		if token != nil {
+			s.delivered[*token] = deliveredSession{
+				code: code,
+				at:   s.clock.Now(),
+			}
+		}
 
 		return s.send(Delivered{Code: code})
 	}
@@ -321,18 +359,71 @@ func (s *sharer) handleWrite(central string, chunk []byte) error {
 	return nil
 }
 
+// handleChosen answers a payer saying its user chose the request of one of
+// our delivered sessions. A match is confirmed and reported, and ends the
+// share unless it should continue; anything else is refused without
+// telling the payer more than that.
+func (s *sharer) handleChosen(central string, conn *centralConn,
+	msg wire.Message) error {
+
+	defer func() {
+		s.radio.native.DisconnectCentral(central)
+		delete(s.conns, central)
+	}()
+
+	s.pruneDelivered()
+	token, err := wire.DecodeChosen(msg.Body)
+	if err != nil || msg.Version != wire.Version1 {
+		s.notify(central, conn, wire.EncodeAbort(
+			wire.AbortProtocolError,
+		))
+		return nil
+	}
+	ds, ok := s.delivered[token]
+	if !ok {
+		log.Debugf("Unknown chosen token from %s", central)
+		s.notify(central, conn, wire.EncodeAbort(
+			wire.AbortUnknownSession,
+		))
+		return nil
+	}
+	delete(s.delivered, token)
+	s.notify(central, conn, wire.EncodeChosenAck())
+
+	if err := s.send(Chosen{Code: ds.code}); err != nil {
+		return err
+	}
+	if s.continueAfterChosen {
+		return nil
+	}
+
+	return errChosen
+}
+
+// pruneDelivered forgets delivered sessions older than ChosenRetention.
+func (s *sharer) pruneDelivered() {
+	cutoff := s.clock.Now().Add(-s.params.ChosenRetention)
+	for token, d := range s.delivered {
+		if d.at.Before(cutoff) {
+			delete(s.delivered, token)
+		}
+	}
+}
+
 // startSession admits a new payer unless the rate limit says otherwise. It
 // reports whether a session started.
 func (s *sharer) startSession(central string, conn *centralConn) (bool, error) {
 	now := s.clock.Now()
-	s.sessionStarts = pruneBefore(s.sessionStarts, now.Add(-time.Minute))
+	s.sessionStarts = pruneBefore(
+		s.sessionStarts, now.Add(-s.params.SessionRateWindow),
+	)
 	limited := len(
 		s.sessionStarts,
-	) >= maxSessionsPerMinute || len(
+	) >= s.params.MaxSessionsPerWindow || len(
 		s.sessionStarts,
 	) > 0 &&
 		now.Sub(s.sessionStarts[len(s.sessionStarts)-1]) <
-			minSessionInterval
+			s.params.MinSessionInterval
 	if limited {
 		log.Debugf("Rate limiting nearby session from %s", central)
 		s.notify(central, conn, wire.EncodeAbort(wire.AbortBusy))
@@ -353,7 +444,7 @@ func (s *sharer) startSession(central string, conn *centralConn) (bool, error) {
 	s.active = &payeeRun{
 		central:  central,
 		sess:     sess,
-		deadline: s.clock.TickAfter(sessionTimeout),
+		deadline: s.clock.TickAfter(s.params.SessionTimeout),
 	}
 
 	return true, nil
@@ -417,12 +508,14 @@ func (s *sharer) sessionFailed(reason FailureReason,
 	}
 
 	now := s.clock.Now()
-	s.codeFailures = pruneBefore(s.codeFailures, now.Add(-suspiciousWindow))
+	s.codeFailures = pruneBefore(
+		s.codeFailures, now.Add(-s.params.SuspiciousWindow),
+	)
 	s.codeFailures = append(s.codeFailures, now)
 
 	// Warn once per window, not on every further failure.
-	if len(s.codeFailures) < suspiciousThreshold ||
-		now.Sub(s.warnedAt) < suspiciousWindow {
+	if len(s.codeFailures) < s.params.SuspiciousThreshold ||
+		now.Sub(s.warnedAt) < s.params.SuspiciousWindow {
 
 		return nil
 	}
@@ -430,7 +523,7 @@ func (s *sharer) sessionFailed(reason FailureReason,
 
 	return s.send(SuspiciousActivity{
 		FailedSessions: len(s.codeFailures),
-		Window:         suspiciousWindow,
+		Window:         s.params.SuspiciousWindow,
 	})
 }
 

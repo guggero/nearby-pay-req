@@ -40,15 +40,31 @@ func startFind(t *testing.T, world *nearbytest.World, payer *node,
 
 	t.Helper()
 
-	f := payer.find(t, exclude...)
+	return startFindWith(t, world, payer, FindOptions{Exclude: exclude})
+}
+
+// startFindWith is startFind with options.
+func startFindWith(t *testing.T, world *nearbytest.World, payer *node,
+	opts FindOptions) *call[FindEvent] {
+
+	t.Helper()
+
+	f := payer.findWith(t, opts)
 	nextAs[Scanning](t, f)
-	payer.waitTick(t, findGiveUpAfter)
+	payer.waitTick(t, payer.params.FindGiveUpAfter)
 
 	world.Advertise()
-	payer.waitTick(t, collectWindow)
-	payer.advance(collectWindow)
+	payer.nextWindow(t)
 
 	return f
+}
+
+// nextWindow lets the payer's pending collection window elapse.
+func (n *node) nextWindow(t *testing.T) {
+	t.Helper()
+
+	n.waitTick(t, n.params.CollectWindow)
+	n.advance(n.params.CollectWindow)
 }
 
 // TestShareFind runs the whole exchange between two phones: the payer
@@ -179,7 +195,7 @@ func TestPayeeBusy(t *testing.T) {
 }
 
 // TestRateLimit checks that a payee refuses a second session within
-// minSessionInterval.
+// defaultMinSessionInterval.
 func TestRateLimit(t *testing.T) {
 	t.Parallel()
 
@@ -221,8 +237,8 @@ func TestSuspiciousActivity(t *testing.T) {
 	share := payee.share(t, testRequest, false)
 	expectStarted(t, share, true, false)
 
-	for i := 0; i < suspiciousThreshold; i++ {
-		payee.advance(minSessionInterval)
+	for i := 0; i < defaultSuspiciousThreshold; i++ {
+		payee.advance(defaultMinSessionInterval)
 		r.connect(t, "payee")
 		r.runUntilCode(t, "payee")
 		nextAs[PeerConnected](t, share)
@@ -235,12 +251,12 @@ func TestSuspiciousActivity(t *testing.T) {
 	}
 
 	warning := nextAs[SuspiciousActivity](t, share)
-	require.Equal(t, suspiciousThreshold, warning.FailedSessions)
+	require.Equal(t, defaultSuspiciousThreshold, warning.FailedSessions)
 	require.Equal(t, time.Minute, warning.Window)
 }
 
 // TestSessionTimeout checks that a stalled payer is dropped after
-// sessionTimeout.
+// defaultSessionTimeout.
 func TestSessionTimeout(t *testing.T) {
 	t.Parallel()
 
@@ -254,8 +270,8 @@ func TestSessionTimeout(t *testing.T) {
 	r.connect(t, "payee")
 	r.openSession(t, "payee")
 
-	payee.waitTick(t, sessionTimeout)
-	payee.advance(sessionTimeout)
+	payee.waitTick(t, defaultSessionTimeout)
+	payee.advance(defaultSessionTimeout)
 	require.Equal(
 		t, FailureTimeout,
 		nextAs[SessionFailed](t, share).Reason,
@@ -477,7 +493,7 @@ func TestReplaceAndPause(t *testing.T) {
 	require.False(t, n.radio.HceActive())
 }
 
-// TestScanDebounce checks that a find restarted within scanStopDebounce
+// TestScanDebounce checks that a find restarted within defaultScanStopDebounce
 // reuses the running native scan, and that the scan stops once the debounce
 // elapses.
 func TestScanDebounce(t *testing.T) {
@@ -490,7 +506,7 @@ func TestScanDebounce(t *testing.T) {
 	nextAs[Scanning](t, find)
 	find.cancel()
 	require.Error(t, find.end(t))
-	n.waitTick(t, scanStopDebounce)
+	n.waitTick(t, defaultScanStopDebounce)
 
 	find = n.find(t)
 	nextAs[Scanning](t, find)
@@ -499,11 +515,11 @@ func TestScanDebounce(t *testing.T) {
 	require.Equal(t, 0, stops)
 
 	// The pending stop from the first find is void.
-	n.advance(scanStopDebounce)
+	n.advance(defaultScanStopDebounce)
 	find.cancel()
 	require.Error(t, find.end(t))
-	n.waitTick(t, scanStopDebounce)
-	n.advance(scanStopDebounce)
+	n.waitTick(t, defaultScanStopDebounce)
+	n.advance(defaultScanStopDebounce)
 	require.Eventually(t, func() bool {
 		_, stops := n.radio.ScanCalls()
 		return stops == 1
@@ -563,8 +579,8 @@ func TestDisconnectBeforeCodeIsNotSuspicious(t *testing.T) {
 	expectStarted(t, share, true, false)
 
 	// Up to the commitment and gone: no code was shown yet.
-	for i := 0; i < suspiciousThreshold; i++ {
-		payee.advance(minSessionInterval)
+	for i := 0; i < defaultSuspiciousThreshold; i++ {
+		payee.advance(defaultMinSessionInterval)
 		r.connect(t, "payee")
 		r.openSession(t, "payee")
 		r.radio.Disconnect("payee")
@@ -575,10 +591,10 @@ func TestDisconnectBeforeCodeIsNotSuspicious(t *testing.T) {
 		)
 	}
 
-	// The warning still needs suspiciousThreshold sessions that showed a
-	// code; the drops above were not among them.
-	for i := 0; i < suspiciousThreshold; i++ {
-		payee.advance(minSessionInterval)
+	// The warning still needs defaultSuspiciousThreshold sessions that
+	// showed a code; the drops above were not among them.
+	for i := 0; i < defaultSuspiciousThreshold; i++ {
+		payee.advance(defaultMinSessionInterval)
 		r.connect(t, "payee")
 		r.runUntilCode(t, "payee")
 		nextAs[PeerConnected](t, share)
@@ -586,7 +602,7 @@ func TestDisconnectBeforeCodeIsNotSuspicious(t *testing.T) {
 		nextAs[SessionFailed](t, share)
 	}
 	warning := nextAs[SuspiciousActivity](t, share)
-	require.Equal(t, suspiciousThreshold, warning.FailedSessions)
+	require.Equal(t, defaultSuspiciousThreshold, warning.FailedSessions)
 }
 
 // TestWriteFailureFailsFast checks that a payer whose write to the sharer

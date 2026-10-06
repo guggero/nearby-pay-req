@@ -148,7 +148,7 @@ type Status struct {
 }
 
 // ShareEvent is one event of a running share. It is one of ShareStarted,
-// AvailabilityChanged, PeerConnected, Delivered, SessionFailed,
+// AvailabilityChanged, PeerConnected, Delivered, Chosen, SessionFailed,
 // SuspiciousActivity or NFCRead.
 type ShareEvent interface {
 	shareEvent()
@@ -183,9 +183,19 @@ type PeerConnected struct {
 	Code string
 }
 
-// Delivered reports that the payer acknowledged the payment request. Code is
-// the code of that session.
+// Delivered reports that a payer received the payment request and can use
+// it. Code is the code of that session. It does not mean the payer's user
+// picked this request: in a room with several payees the payer may collect
+// several and its user picks one by its code, which arrives as Chosen.
 type Delivered struct {
+	Code string
+}
+
+// Chosen reports that the payer of an earlier delivered session matched the
+// codes and picked this request, so other payers should no longer get it.
+// Code is the code of that session. Unless ShareOptions.ContinueAfterChosen
+// is set, the share ends right after this event.
+type Chosen struct {
 	Code string
 }
 
@@ -234,6 +244,12 @@ type Received struct {
 	// FindOptions.Exclude skips this sharer on the next find, for when
 	// the user says the codes do not match.
 	PeerID string
+
+	// ChosenToken identifies this session to the payee. Once the user
+	// confirmed the codes match and picked this request, pass it with
+	// PeerID to Manager.Choose so the payee stops sharing. It is opaque
+	// and only meaningful to that payee, for Params.ChosenRetention.
+	ChosenToken []byte
 }
 
 func (ShareStarted) shareEvent()        {}
@@ -241,6 +257,7 @@ func (AvailabilityChanged) shareEvent() {}
 func (AvailabilityChanged) findEvent()  {}
 func (PeerConnected) shareEvent()       {}
 func (Delivered) shareEvent()           {}
+func (Chosen) shareEvent()              {}
 func (SessionFailed) shareEvent()       {}
 func (SessionFailed) findEvent()        {}
 func (SuspiciousActivity) shareEvent()  {}

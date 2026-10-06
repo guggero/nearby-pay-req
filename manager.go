@@ -69,6 +69,10 @@ type Config struct {
 
 	// Rand supplies the session randomness; nil means crypto/rand.
 	Rand io.Reader
+
+	// Params tunes timeouts, peer selection and rate limits. Unset
+	// fields take their defaults (see DefaultParams).
+	Params Params
 }
 
 // ShareOptions configures one share.
@@ -76,6 +80,12 @@ type ShareOptions struct {
 	// NFC also serves the request as an emulated NFC tag where the
 	// device supports host card emulation and NFC is on.
 	NFC bool
+
+	// ContinueAfterChosen keeps sharing after a payer chose the request
+	// (see Chosen), for a request several people may pay, such as a
+	// donation address. By default a chosen request stops being shared
+	// and Share returns nil.
+	ContinueAfterChosen bool
 }
 
 // FindOptions configures one find.
@@ -90,6 +100,13 @@ type FindOptions struct {
 	// fails with FailurePayloadInvalid and the find goes on. Nil
 	// accepts every request.
 	Validate func(paymentRequest string) error
+
+	// Collect keeps finding after a Received: the find visits every
+	// sharer in range one after another and emits a Received for each,
+	// so the user can pick the request whose code matches the screen of
+	// the person they are paying. It runs until ctx ends. Without it,
+	// Find returns after the first Received.
+	Collect bool
 }
 
 // Manager runs nearby shares and finds on one radio. It owns the radio
@@ -121,13 +138,16 @@ func New(cfg Config) *Manager {
 	if cfg.Clock == nil {
 		cfg.Clock = clock.NewDefaultClock()
 	}
+	cfg.Params = cfg.Params.withDefaults()
 	m := &Manager{
 		cfg:        cfg,
 		tag:        hce.New(),
 		statusSubs: make(map[chan struct{}]struct{}),
 	}
 	if cfg.Radio != nil {
-		m.radio = newRadioMux(cfg.Radio, cfg.Clock)
+		m.radio = newRadioMux(
+			cfg.Radio, cfg.Clock, cfg.Params.ScanStopDebounce,
+		)
 	}
 
 	return m
@@ -199,12 +219,13 @@ func (m *Manager) Status() Status {
 	}
 }
 
-// Share serves paymentRequest until ctx ends, reporting progress through
-// emit, which runs on the calling goroutine. It keeps serving after a
-// delivery, for the next payer, and waits for Bluetooth to be switched on if
-// it is off. It returns ErrInvalidPaymentRequest or an *UnavailableError
-// before starting, and otherwise ErrReplaced, ErrPaused, the context's
-// error, or the error emit returned.
+// Share serves paymentRequest until ctx ends or a payer chose it, reporting
+// progress through emit, which runs on the calling goroutine. It keeps
+// serving after a delivery, for the next payer, and waits for Bluetooth to
+// be switched on if it is off. It returns nil after emitting Chosen (unless
+// opts.ContinueAfterChosen is set), ErrInvalidPaymentRequest or an
+// *UnavailableError before starting, and otherwise ErrReplaced, ErrPaused,
+// the context's error, or the error emit returned.
 func (m *Manager) Share(ctx context.Context, paymentRequest string,
 	opts ShareOptions, emit func(ShareEvent) error) error {
 
@@ -228,23 +249,26 @@ func (m *Manager) Share(ctx context.Context, paymentRequest string,
 	defer unsubscribe()
 
 	sh := &sharer{
-		radio:          m.radio,
-		tag:            m.tag,
-		clock:          m.cfg.Clock,
-		rand:           m.cfg.Rand,
-		paymentRequest: paymentRequest,
-		nfc:            nfc,
-		availability:   m.shareAvailability,
-		statusChanged:  statusCh,
-		send:           emit,
+		radio:               m.radio,
+		tag:                 m.tag,
+		params:              m.cfg.Params,
+		continueAfterChosen: opts.ContinueAfterChosen,
+		clock:               m.cfg.Clock,
+		rand:                m.cfg.Rand,
+		paymentRequest:      paymentRequest,
+		nfc:                 nfc,
+		availability:        m.shareAvailability,
+		statusChanged:       statusCh,
+		send:                emit,
 	}
 
 	return result(ctx, sh.run(ctx))
 }
 
-// Find searches for one payment request, reporting progress through emit,
-// which runs on the calling goroutine. It returns nil right after emitting
-// Received; otherwise it runs until ctx ends and returns ErrReplaced,
+// Find searches for one payment request, or with opts.Collect for every one
+// in range, reporting progress through emit, which runs on the calling
+// goroutine. Without Collect it returns nil right after emitting Received;
+// otherwise it runs until ctx ends and returns ErrReplaced,
 // ErrPaused, ErrScanFailed, the context's error, or the error emit
 // returned. It returns an *UnavailableError before starting if finding
 // cannot work at all.
@@ -274,6 +298,8 @@ func (m *Manager) Find(ctx context.Context, opts FindOptions,
 		radio:         m.radio,
 		clock:         m.cfg.Clock,
 		rand:          m.cfg.Rand,
+		params:        m.cfg.Params,
+		collect:       opts.Collect,
 		exclude:       exclude,
 		validate:      validate,
 		availability:  m.findAvailability,
@@ -337,8 +363,9 @@ func (m *Manager) subscribeStatus() (<-chan struct{}, func()) {
 // run returned.
 func result(ctx context.Context, err error) error {
 	switch cause := context.Cause(ctx); {
-	// A find that delivered its request.
-	case err == nil:
+	// A find that delivered its request, a share whose request was
+	// chosen, or a Choose the payee confirmed.
+	case err == nil, errors.Is(err, errChosen):
 		return nil
 
 	// Superseded by a newer call, or paused.

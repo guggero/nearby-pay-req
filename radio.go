@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"sync"
+	"time"
 
 	"github.com/guggero/nearby-pay-req/radio"
 	"github.com/lightningnetwork/lnd/clock"
@@ -48,7 +49,7 @@ type event struct {
 
 // sink is a queue of radio events with a non-blocking send. Native threads
 // must never wait for Go, so a full queue drops the event (see
-// eventQueueLen).
+// Params.EventQueueLen).
 type sink chan event
 
 // push enqueues ev or drops it.
@@ -64,10 +65,11 @@ func (s sink) push(ev event) {
 // radioMux wraps the platform radio. It owns the single callback object of
 // each role, so the native side always reports to the same Go value, and
 // routes events to whichever share or find is currently subscribed. It also
-// debounces stopping a scan (see scanStopDebounce).
+// debounces stopping a scan (see Params.ScanStopDebounce).
 type radioMux struct {
-	native radio.Radio
-	clock  clock.Clock
+	native       radio.Radio
+	clock        clock.Clock
+	stopDebounce time.Duration
 
 	mu sync.Mutex
 
@@ -85,10 +87,13 @@ type radioMux struct {
 }
 
 // newRadioMux wraps native, which must not be nil.
-func newRadioMux(native radio.Radio, clk clock.Clock) *radioMux {
+func newRadioMux(native radio.Radio, clk clock.Clock,
+	stopDebounce time.Duration) *radioMux {
+
 	return &radioMux{
 		native:       native,
 		clock:        clk,
+		stopDebounce: stopDebounce,
 		ContextGuard: fn.NewContextGuard(),
 	}
 }
@@ -172,7 +177,7 @@ func (r *radioMux) scanLost() {
 }
 
 // stopScan unsubscribes the find and stops the native scan after
-// scanStopDebounce, unless another scan starts first.
+// the stop debounce, unless another scan starts first.
 func (r *radioMux) stopScan() {
 	r.mu.Lock()
 	r.findSink = nil
@@ -188,7 +193,7 @@ func (r *radioMux) stopScan() {
 		defer cancel()
 
 		select {
-		case <-r.clock.TickAfter(scanStopDebounce):
+		case <-r.clock.TickAfter(r.stopDebounce):
 
 		case <-ctx.Done():
 			return

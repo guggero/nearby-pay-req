@@ -35,12 +35,14 @@ type payerRun struct {
 // finder searches for one payment request until it receives one or its
 // context ends.
 type finder struct {
-	radio *radioMux
-	clock clock.Clock
-	rand  io.Reader
+	radio  *radioMux
+	clock  clock.Clock
+	rand   io.Reader
+	params Params
 
 	exclude  map[string]bool
 	validate func(string) error
+	collect  bool
 
 	availability  func() Availability
 	statusChanged <-chan struct{}
@@ -53,6 +55,9 @@ type finder struct {
 	scanning         bool
 	candidates       map[string]*candidate
 	failed           map[string]bool
+	received         map[string]bool
+	busyRetries      map[string]int
+	retryAt          map[string]time.Time
 	window           <-chan time.Time
 	giveUp           <-chan time.Time
 	tooFarSent       bool
@@ -62,9 +67,12 @@ type finder struct {
 // run searches until a payment request was received (nil), ctx ends, the
 // stream breaks or the scan fails.
 func (f *finder) run(ctx context.Context) error {
-	f.events = make(sink, eventQueueLen)
+	f.events = make(sink, f.params.EventQueueLen)
 	f.candidates = make(map[string]*candidate)
 	f.failed = make(map[string]bool)
+	f.received = make(map[string]bool)
+	f.busyRetries = make(map[string]int)
+	f.retryAt = make(map[string]time.Time)
 	defer f.stopScan(false)
 
 	if err := f.refresh(true); err != nil {
@@ -139,7 +147,7 @@ func (f *finder) refresh(initial bool) error {
 			return ErrScanFailed
 		}
 		f.scanning = true
-		f.giveUp = f.clock.TickAfter(findGiveUpAfter)
+		f.giveUp = f.clock.TickAfter(f.params.FindGiveUpAfter)
 
 		return f.send(Scanning{})
 
@@ -191,7 +199,7 @@ func (f *finder) handleEvent(ev event) (bool, error) {
 	// A sighting: update the peer's smoothed RSSI and open the
 	// collection window on the first one.
 	case evAdvertisement:
-		if !f.scanning || f.exclude[ev.id] || f.failed[ev.id] {
+		if !f.eligible(ev.id) {
 			return false, nil
 		}
 		c, ok := f.candidates[ev.id]
@@ -199,10 +207,11 @@ func (f *finder) handleEvent(ev event) (bool, error) {
 			c = &candidate{rssi: float64(ev.rssi)}
 			f.candidates[ev.id] = c
 		} else {
-			c.rssi += rssiSmoothing * (float64(ev.rssi) - c.rssi)
+			c.rssi += f.params.RSSISmoothing *
+				(float64(ev.rssi) - c.rssi)
 		}
 		if f.window == nil && f.active == nil {
-			f.window = f.clock.TickAfter(collectWindow)
+			f.window = f.clock.TickAfter(f.params.CollectWindow)
 		}
 
 		return false, nil
@@ -275,8 +284,8 @@ func (f *finder) pick() error {
 
 	// Keep re-evaluating while sharers are visible but too far away;
 	// someone walking up should be picked without restarting.
-	if bestDB < rssiFloor {
-		f.window = f.clock.TickAfter(collectWindow)
+	if bestDB < float64(f.params.RSSIFloor) {
+		f.window = f.clock.TickAfter(f.params.CollectWindow)
 		if f.tooFarSent {
 			return nil
 		}
@@ -289,7 +298,7 @@ func (f *finder) pick() error {
 	log.Debugf("Connecting to nearby sharer %s (rssi %.0f)", best, bestDB)
 	f.active = &payerRun{
 		peer:     best,
-		deadline: f.clock.TickAfter(connectTimeout),
+		deadline: f.clock.TickAfter(f.params.ConnectTimeout),
 	}
 	if err := f.send(Connecting{}); err != nil {
 		return err
@@ -323,7 +332,7 @@ func (f *finder) startSession(maxChunk int) error {
 	f.active.sess = sess
 	f.active.maxChunk = maxChunk
 	f.active.connected = true
-	f.active.deadline = f.clock.TickAfter(sessionTimeout)
+	f.active.deadline = f.clock.TickAfter(f.params.SessionTimeout)
 
 	if !f.writeAll(out.Send) {
 		return f.failActive(
@@ -396,27 +405,69 @@ func (f *finder) handleNotify(chunk []byte) (bool, error) {
 	f.radio.native.Disconnect(peer)
 	f.active = nil
 
-	return true, f.send(Received{
+	var token []byte
+	if out.ChosenToken != nil {
+		token = out.ChosenToken[:]
+	}
+	err = f.send(Received{
 		PaymentRequest: out.PaymentRequest,
 		Code:           out.Code,
 		PeerID:         peer,
+		ChosenToken:    token,
 	})
+	if err != nil || !f.collect {
+		return err == nil, err
+	}
+
+	// Collecting: this sharer is done, the others still get their
+	// turn, and the find no longer counts as fruitless.
+	f.received[peer] = true
+	delete(f.candidates, peer)
+	f.giveUp = nil
+	if len(f.candidates) > 0 {
+		f.window = f.clock.TickAfter(f.params.CollectWindow)
+	}
+
+	return false, nil
 }
 
-// failActive ends the active session, excludes its sharer for the rest of
-// this find and goes back to picking.
+// eligible reports whether a sighted sharer may become a candidate: not
+// excluded by the caller, not failed or already received from in this find,
+// and not waiting out a busy retry delay.
+func (f *finder) eligible(peer string) bool {
+	if !f.scanning || f.exclude[peer] || f.failed[peer] ||
+		f.received[peer] {
+
+		return false
+	}
+
+	return !f.clock.Now().Before(f.retryAt[peer])
+}
+
+// failActive ends the active session and goes back to picking. A sharer
+// that was busy serving someone else is tried again after BusyRetryDelay,
+// up to MaxBusyRetries times; any other failure excludes it for the rest of
+// this find.
 func (f *finder) failActive(reason FailureReason) error {
 	if f.active == nil {
 		return nil
 	}
 	peer := f.active.peer
 	f.active = nil
-	f.failed[peer] = true
 	delete(f.candidates, peer)
 	f.radio.native.Disconnect(peer)
 
+	if reason == FailurePeerBusy &&
+		f.busyRetries[peer] < f.params.MaxBusyRetries {
+
+		f.busyRetries[peer]++
+		f.retryAt[peer] = f.clock.Now().Add(f.params.BusyRetryDelay)
+	} else {
+		f.failed[peer] = true
+	}
+
 	if len(f.candidates) > 0 {
-		f.window = f.clock.TickAfter(collectWindow)
+		f.window = f.clock.TickAfter(f.params.CollectWindow)
 	}
 
 	return f.sendFailed(reason)

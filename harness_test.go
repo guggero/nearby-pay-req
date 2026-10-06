@@ -28,15 +28,25 @@ const (
 
 // node is one phone: a fake radio, its own test clock and a Manager.
 type node struct {
-	id    string
-	radio *nearbytest.Radio
-	clock *clock.TestClock
-	ticks chan time.Duration
-	mgr   *Manager
+	id     string
+	radio  *nearbytest.Radio
+	clock  *clock.TestClock
+	ticks  chan time.Duration
+	mgr    *Manager
+	params Params
 }
 
-// newNode adds a phone to world.
+// newNode adds a phone with the default parameters to world.
 func newNode(t *testing.T, world *nearbytest.World, id string) *node {
+	t.Helper()
+
+	return newNodeWithParams(t, world, id, Params{})
+}
+
+// newNodeWithParams adds a phone with the given parameters to world.
+func newNodeWithParams(t *testing.T, world *nearbytest.World, id string,
+	params Params) *node {
+
 	t.Helper()
 
 	// A large buffer keeps TickAfter from blocking when a test isn't
@@ -46,10 +56,17 @@ func newNode(t *testing.T, world *nearbytest.World, id string) *node {
 		time.Unix(1_700_000_000, 0), ticks,
 	)
 	fake := world.NewRadio(id)
-	mgr := New(Config{Radio: fake, Clock: clk})
+	mgr := New(Config{Radio: fake, Clock: clk, Params: params})
 	t.Cleanup(mgr.Stop)
 
-	return &node{id: id, radio: fake, clock: clk, ticks: ticks, mgr: mgr}
+	return &node{
+		id:     id,
+		radio:  fake,
+		clock:  clk,
+		ticks:  ticks,
+		mgr:    mgr,
+		params: params.withDefaults(),
+	}
 }
 
 // waitTick waits until a ticker of duration d was registered.
@@ -85,6 +102,14 @@ type call[E any] struct {
 // next returns the next event of the call.
 func (c *call[E]) next(t *testing.T) E {
 	t.Helper()
+
+	// Events emitted before the call returned come first.
+	select {
+	case ev := <-c.events:
+		return ev
+
+	default:
+	}
 
 	select {
 	case ev := <-c.events:
@@ -159,12 +184,19 @@ func (n *node) share(t *testing.T, request string,
 
 	t.Helper()
 
+	return n.shareWith(t, request, ShareOptions{NFC: nfc})
+}
+
+// shareWith starts a share on n with the given options.
+func (n *node) shareWith(t *testing.T, request string,
+	opts ShareOptions) *call[ShareEvent] {
+
+	t.Helper()
+
 	return startCall(
 		t,
 		func(ctx context.Context, emit func(ShareEvent) error) error {
-			return n.mgr.Share(
-				ctx, request, ShareOptions{NFC: nfc}, emit,
-			)
+			return n.mgr.Share(ctx, request, opts, emit)
 		},
 	)
 }
@@ -173,12 +205,19 @@ func (n *node) share(t *testing.T, request string,
 func (n *node) find(t *testing.T, exclude ...string) *call[FindEvent] {
 	t.Helper()
 
+	return n.findWith(t, FindOptions{Exclude: exclude})
+}
+
+// findWith starts a find on n with the given options, validating requests
+// with validateTestRequest.
+func (n *node) findWith(t *testing.T, opts FindOptions) *call[FindEvent] {
+	t.Helper()
+
+	opts.Validate = validateTestRequest
+
 	return startCall(
 		t, func(ctx context.Context, emit func(FindEvent) error) error {
-			return n.mgr.Find(ctx, FindOptions{
-				Exclude:  exclude,
-				Validate: validateTestRequest,
-			}, emit)
+			return n.mgr.Find(ctx, opts, emit)
 		},
 	)
 }

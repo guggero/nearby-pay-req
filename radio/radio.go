@@ -84,7 +84,10 @@ type Radio interface {
 	// Connect connects to peerID, requests the largest MTU (Android),
 	// discovers the service, enables notifications on txUUID and then
 	// reports OnConnected. It returns immediately; failures arrive as
-	// OnDisconnected.
+	// OnDisconnected. It must also work for a peer reported earlier in
+	// the app's lifetime whose scan has since stopped, because the
+	// Manager reconnects to tell a payee its request was chosen (on iOS,
+	// keep the CBPeripheral or use retrievePeripherals(withIdentifiers:)).
 	Connect(peerID, serviceUUID, rxUUID, txUUID string) error
 
 	// Write writes one chunk to rxUUID with response. It blocks until
