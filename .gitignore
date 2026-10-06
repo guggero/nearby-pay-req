@@ -1,0 +1,3 @@
+# Test and coverage output.
+*.out
+coverage.txt

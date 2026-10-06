@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: make build
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.9.0
+
+      - name: Unit tests (race)
+        run: make unit-race
+
+      - name: Test vectors are reproducible
+        run: |
+          make vectors
+          git diff --exit-code spec/vectors.json
+
+      - name: Modules are tidy
+        run: |
+          make tidy
+          git diff --exit-code go.mod go.sum spec/gen/go.mod spec/gen/go.sum
