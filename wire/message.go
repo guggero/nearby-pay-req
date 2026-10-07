@@ -193,6 +193,17 @@ func EncodeChosenAck() []byte {
 	return EncodeMessage(TypeChosen, nil)
 }
 
+// DecodeChosenAck checks the body of the payee's CHOSEN confirmation, which
+// is empty.
+func DecodeChosenAck(body []byte) error {
+	if len(body) != 0 {
+		return fmt.Errorf("%w: chosen confirmation with %d body bytes",
+			ErrProtocol, len(body))
+	}
+
+	return nil
+}
+
 // DecodeChosen parses the body of the payer's CHOSEN message.
 func DecodeChosen(body []byte) ([ChosenTokenLen]byte, error) {
 	var token [ChosenTokenLen]byte

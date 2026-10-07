@@ -1,6 +1,7 @@
 package nearby
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -247,4 +248,79 @@ func TestParamsDefaults(t *testing.T) {
 	require.Equal(t, -90, p.RSSIFloor)
 	require.InDelta(t, defaultRSSISmoothing, p.RSSISmoothing, 0)
 	require.Equal(t, 250*time.Millisecond, p.BusyRetryDelay)
+}
+
+// TestChooseAnswer checks how the payer reads the payee's answer to a
+// CHOSEN: only the empty v1 confirmation confirms, an unknown session is
+// final, and anything else is an error worth another attempt.
+func TestChooseAnswer(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		msg     []byte
+		wantErr error
+		final   bool
+	}{{
+		name: "confirmation",
+		msg:  wire.EncodeChosenAck(),
+	}, {
+		name:    "wrong version",
+		msg:     []byte{255, byte(wire.TypeChosen)},
+		wantErr: wire.ErrProtocol,
+	}, {
+		name:    "non-empty body",
+		msg:     []byte{wire.Version1, byte(wire.TypeChosen), 1, 2},
+		wantErr: wire.ErrProtocol,
+	}, {
+		name:    "wrong version and body",
+		msg:     []byte{255, byte(wire.TypeChosen), 1, 2},
+		wantErr: wire.ErrProtocol,
+	}, {
+		name:    "truncated header",
+		msg:     []byte{wire.Version1},
+		wantErr: wire.ErrProtocol,
+	}, {
+		name:    "unexpected type",
+		msg:     wire.EncodeMessage(wire.TypeSealed, nil),
+		wantErr: wire.ErrProtocol,
+	}, {
+		name:    "malformed abort",
+		msg:     []byte{wire.Version1, byte(wire.TypeAbort), 7},
+		wantErr: wire.ErrProtocol,
+	}, {
+		name:    "unknown session",
+		msg:     wire.EncodeAbort(wire.AbortUnknownSession),
+		wantErr: ErrUnknownSession,
+		final:   true,
+	}, {
+		name: "unknown session, any version",
+		msg: []byte{
+			9, byte(wire.TypeAbort), 0,
+			byte(wire.AbortUnknownSession),
+		},
+		wantErr: ErrUnknownSession,
+		final:   true,
+	}, {
+		name: "busy",
+		msg:  wire.EncodeAbort(wire.AbortBusy),
+	}}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := answer(tc.msg)
+			switch {
+			case tc.name == "confirmation":
+				require.NoError(t, err)
+
+			case tc.wantErr != nil:
+				require.ErrorIs(t, err, tc.wantErr)
+
+			default:
+				require.Error(t, err)
+			}
+			require.Equal(
+				t, tc.final, errors.Is(err, ErrUnknownSession),
+			)
+		})
+	}
 }

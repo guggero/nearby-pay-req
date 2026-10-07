@@ -189,12 +189,18 @@ func answer(msg []byte) error {
 	}
 
 	switch parsed.Type {
-	// Confirmed.
+	// Confirmed, if it is the empty v1 confirmation the spec defines;
+	// anything else is not a confirmation.
 	case wire.TypeChosen:
-		return nil
+		if parsed.Version != wire.Version1 {
+			return fmt.Errorf("%w: chosen confirmation of version "+
+				"%d", wire.ErrProtocol, parsed.Version)
+		}
+
+		return wire.DecodeChosenAck(parsed.Body)
 
 	// Refused: an unknown session is final, anything else is worth
-	// another attempt.
+	// another attempt. An ABORT counts whatever its version byte.
 	case wire.TypeAbort:
 		reason, _, err := wire.DecodeAbort(parsed.Body)
 		if err != nil {
