@@ -728,3 +728,64 @@ func TestAckWriteFailure(t *testing.T) {
 		t, FailureConnectFailed, nextAs[SessionFailed](t, share).Reason,
 	)
 }
+
+// TestNFCFollowsStatus checks that a share serves the tag only while NFC is
+// on, starting and stopping it as NFC is switched on and off, and that an
+// NFC-only share waits for NFC instead of being refused.
+func TestNFCFollowsStatus(t *testing.T) {
+	t.Parallel()
+
+	world := nearbytest.NewWorld()
+	n := newNode(t, world, "phone")
+	nfcOff := nearbytest.DefaultStatus &^ radio.StatusNfcEnabled
+	selectApp := []byte{
+		0x00, 0xA4, 0x04, 0x00, 0x07, 0xD2, 0x76, 0x00, 0x00, 0x85,
+		0x01, 0x01, 0x00,
+	}
+
+	n.radio.SetStatus(nfcOff)
+	share := n.share(t, testRequest, true)
+	expectStarted(t, share, true, false)
+	require.False(t, n.radio.HceActive())
+	require.Equal(t, []byte{0x6A, 0x82}, n.mgr.ProcessAPDU(selectApp))
+
+	// On: the tag serves. A repeated nudge changes nothing.
+	n.radio.SetStatus(nearbytest.DefaultStatus)
+	n.mgr.StatusChanged()
+	expectStarted(t, share, true, true)
+	require.True(t, n.radio.HceActive())
+	n.mgr.StatusChanged()
+	readNDEF(t, n.mgr)
+	nextAs[NFCRead](t, share)
+
+	// Off again: the tag is gone.
+	n.radio.SetStatus(nfcOff)
+	n.mgr.StatusChanged()
+	expectStarted(t, share, true, false)
+	require.False(t, n.radio.HceActive())
+	require.Equal(t, []byte{0x6A, 0x82}, n.mgr.ProcessAPDU(selectApp))
+	share.cancel()
+	require.Error(t, share.end(t))
+
+	// NFC only (no Bluetooth permission), NFC off: the share waits,
+	// and serves the tag once NFC comes on.
+	n.radio.SetStatus(nfcOff &^ radio.StatusPermissionGranted)
+	nfcOnly := n.share(t, testRequest, true)
+	require.Equal(
+		t, PermissionDenied,
+		nextAs[AvailabilityChanged](t, nfcOnly).Availability,
+	)
+	n.radio.SetStatus(
+		nearbytest.DefaultStatus &^ radio.StatusPermissionGranted,
+	)
+	n.mgr.StatusChanged()
+	expectStarted(t, nfcOnly, false, true)
+	require.True(t, n.radio.HceActive())
+
+	// Ending the share releases it, and a late nudge does not bring it
+	// back.
+	nfcOnly.cancel()
+	require.Error(t, nfcOnly.end(t))
+	n.mgr.StatusChanged()
+	require.False(t, n.radio.HceActive())
+}

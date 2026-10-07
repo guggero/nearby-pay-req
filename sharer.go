@@ -79,8 +79,15 @@ type sharer struct {
 	params Params
 
 	paymentRequest      string
-	nfc                 bool
 	continueAfterChosen bool
+
+	// nfcRequested is whether the caller asked for NFC, nfcAvailable
+	// reports whether NFC can serve right now, and nfc is whether the
+	// tag serves the request. A share follows NFC being switched on and
+	// off while it runs.
+	nfcRequested bool
+	nfcAvailable func() bool
+	nfc          bool
 
 	// availability reports the current BLE sharing availability;
 	// statusChanged nudges a re-check.
@@ -121,29 +128,12 @@ func (s *sharer) run(ctx context.Context) error {
 	s.conns = make(map[string]*centralConn)
 	s.delivered = make(map[[wire.ChosenTokenLen]byte]deliveredSession)
 
-	// The NFC tag only needs the message and the preferred-service
-	// registration; it runs independently of Bluetooth.
-	if s.nfc {
-		message, err := ndef.EncodeURIMessage(s.paymentRequest)
-		if err != nil {
-			return err
-		}
-		err = s.tag.SetMessage(message, func() {
-			select {
-			case s.nfcReads <- struct{}{}:
-
-			default:
-			}
-		})
-		if err != nil {
-			return err
-		}
-		s.radio.native.SetHceActive(true)
-		defer func() {
-			s.radio.native.SetHceActive(false)
-			s.tag.Clear()
-		}()
+	// The NFC tag only needs the message and the HCE registration; it
+	// runs independently of Bluetooth.
+	if _, err := s.refreshNFC(); err != nil {
+		return err
 	}
+	defer s.stopNFC()
 	defer s.stopBLE()
 
 	// A notification blocked in the native stack when the share ends
@@ -156,7 +146,7 @@ func (s *sharer) run(ctx context.Context) error {
 
 	// The first refresh starts advertising if possible and always
 	// reports where the share stands.
-	if err := s.refreshBLE(true); err != nil {
+	if _, err := s.refreshBLE(true); err != nil {
 		return err
 	}
 
@@ -199,10 +189,21 @@ func (s *sharer) run(ctx context.Context) error {
 				return err
 			}
 
-		// Bluetooth was switched on or off, or a permission changed.
+		// Bluetooth or NFC was switched on or off, or a permission
+		// changed.
 		case <-s.statusChanged:
-			if err := s.refreshBLE(false); err != nil {
+			nfcChanged, err := s.refreshNFC()
+			if err != nil {
 				return err
+			}
+			reported, err := s.refreshBLE(false)
+			if err != nil {
+				return err
+			}
+			if nfcChanged && !reported {
+				if err := s.sendStarted(); err != nil {
+					return err
+				}
 			}
 
 		// The active session took too long.
@@ -266,10 +267,54 @@ func (s *sharer) timeoutActive() error {
 	return s.failActive(FailureTimeout)
 }
 
+// refreshNFC starts or stops serving the tag to match whether NFC was
+// requested and is available now, and reports whether that changed.
+func (s *sharer) refreshNFC() (bool, error) {
+	want := s.nfcRequested && s.nfcAvailable()
+	switch {
+	case want && !s.nfc:
+		message, err := ndef.EncodeURIMessage(s.paymentRequest)
+		if err != nil {
+			return false, err
+		}
+		err = s.tag.SetMessage(message, func() {
+			select {
+			case s.nfcReads <- struct{}{}:
+
+			default:
+			}
+		})
+		if err != nil {
+			return false, err
+		}
+		s.radio.native.SetHceActive(true)
+		s.nfc = true
+
+		return true, nil
+
+	case !want && s.nfc:
+		s.stopNFC()
+		return true, nil
+
+	default:
+		return false, nil
+	}
+}
+
+// stopNFC stops serving the tag and gives up the HCE registration.
+func (s *sharer) stopNFC() {
+	if !s.nfc {
+		return
+	}
+	s.radio.native.SetHceActive(false)
+	s.tag.Clear()
+	s.nfc = false
+}
+
 // refreshBLE starts or stops advertising to match the current availability
 // and reports changes. initial forces a report, so the client always learns
-// the starting state.
-func (s *sharer) refreshBLE(initial bool) error {
+// the starting state. It reports whether it sent a ShareStarted.
+func (s *sharer) refreshBLE(initial bool) (bool, error) {
 	avail := s.availability()
 	changed := initial || avail != s.lastAvailability
 	s.lastAvailability = avail
@@ -286,33 +331,33 @@ func (s *sharer) refreshBLE(initial bool) error {
 			s.advertising = true
 		}
 
-		return s.sendStarted()
+		return true, s.sendStarted()
 
 	// Gone unavailable while advertising: stop and say why.
 	case avail != Available &&
 		s.advertising:
 
 		s.stopBLE()
-		return s.sendAvailability(avail)
+		return false, s.sendAvailability(avail)
 
 	// Unavailable from the start (Bluetooth off, …): report it, plus
 	// the NFC-only start if NFC runs.
 	case initial && avail != Available:
 		if err := s.sendAvailability(avail); err != nil {
-			return err
+			return false, err
 		}
 		if s.nfc {
-			return s.sendStarted()
+			return true, s.sendStarted()
 		}
 
-		return nil
+		return false, nil
 
 	// Still unavailable, for a different reason.
 	case changed && !s.advertising:
-		return s.sendAvailability(avail)
+		return false, s.sendAvailability(avail)
 
 	default:
-		return nil
+		return false, nil
 	}
 }
 

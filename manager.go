@@ -78,7 +78,9 @@ type Config struct {
 // ShareOptions configures one share.
 type ShareOptions struct {
 	// NFC also serves the request as an emulated NFC tag where the
-	// device supports host card emulation and NFC is on.
+	// device supports host card emulation, whenever NFC is on: the
+	// share starts and stops the tag as the user switches NFC on and
+	// off (see StatusChanged), reporting each change as ShareStarted.
 	NFC bool
 
 	// ContinueAfterChosen keeps sharing after a payer chose the request
@@ -235,10 +237,11 @@ func (m *Manager) Share(ctx context.Context, paymentRequest string,
 		return fmt.Errorf("%w: %v", ErrInvalidPaymentRequest, err)
 	}
 
-	// Refuse only what can never work during this share. Bluetooth
-	// being off is temporary: the share waits for it, reporting why.
+	// Refuse only what can never work during this share. Bluetooth or
+	// NFC being off is temporary: the share waits for it, reporting
+	// why.
 	ble := m.shareAvailability()
-	nfc := opts.NFC && m.nfcAvailable()
+	nfc := opts.NFC && m.hceSupported()
 	if !nfc && !ble.recoverable() {
 		return &UnavailableError{Role: "share", Availability: ble}
 	}
@@ -257,7 +260,8 @@ func (m *Manager) Share(ctx context.Context, paymentRequest string,
 		clock:               m.cfg.Clock,
 		rand:                m.cfg.Rand,
 		paymentRequest:      paymentRequest,
-		nfc:                 nfc,
+		nfcRequested:        opts.NFC,
+		nfcAvailable:        m.nfcAvailable,
 		availability:        m.shareAvailability,
 		statusChanged:       statusCh,
 		send:                emit,
@@ -421,6 +425,12 @@ func (m *Manager) availability(roleFlag int,
 	default:
 		return Available
 	}
+}
+
+// hceSupported reports whether the device can emulate an NFC tag at all,
+// NFC being switched on or not.
+func (m *Manager) hceSupported() bool {
+	return m.radio != nil && m.radio.status()&radio.StatusHceSupported != 0
 }
 
 // nfcAvailable reports whether a share can also be read as an NFC tag.
