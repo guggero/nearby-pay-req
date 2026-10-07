@@ -380,11 +380,19 @@ func (f *finder) handleNotify(chunk []byte) (bool, error) {
 
 	// Let the wallet check the request before acknowledging it; an
 	// unusable request is rejected so the sharer learns about it, and
-	// the search goes on.
+	// the search goes on. The request and the validator's error, which
+	// may quote it, only go to the trace level, which production builds
+	// keep off: amounts, addresses and node ids have no place in a
+	// production log, but a developer chasing a rejected request needs
+	// them.
+	log.Debugf("Nearby payment request from %s: %d bytes", f.active.peer,
+		len(out.PaymentRequest))
 	log.Tracef("Nearby payment request from %s: %q", f.active.peer,
 		out.PaymentRequest)
 	if err := f.validate(out.PaymentRequest); err != nil {
-		log.Debugf("Nearby payment request from %s rejected: %v",
+		log.Debugf("Nearby payment request from %s rejected",
+			f.active.peer)
+		log.Tracef("Nearby payment request from %s rejected: %v",
 			f.active.peer, err)
 		if reject, rErr := f.active.sess.Reject(); rErr == nil {
 			f.writeAll(reject.Send)

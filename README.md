@@ -237,9 +237,13 @@ func (a radioAdapter) StartScan(service string, cb radio.CentralCallback) error 
 ## Logging
 
 The root package logs through [btclog](https://github.com/btcsuite/btclog)
-and stays silent until you call `nearby.UseLogger`. Payment requests
-and codes are only logged at trace level. Keep trace disabled in production
-builds, as the spec recommends.
+and stays silent until you call `nearby.UseLogger`. Payment requests,
+comparison codes and the errors your `Validate` hook returns (which often
+quote the request) are only logged at trace level, so a developer can
+follow a rejected request; keep trace off in production builds, as the
+spec requires. Debug and higher carry event types, sizes, peer ids and
+failure reasons only, so radio state transitions stay debuggable without
+them. Chosen tokens, keys and nonces are never logged.
 
 ## Development
 

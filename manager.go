@@ -98,7 +98,8 @@ type FindOptions struct {
 	// acknowledges it, typically by running the wallet's payment
 	// parser. A rejected request is reported to the sharer, the session
 	// fails with FailurePayloadInvalid and the find goes on. Nil
-	// accepts every request.
+	// accepts every request. The returned error is only logged at trace
+	// level, since parser errors often quote their input.
 	Validate func(paymentRequest string) error
 
 	// Collect keeps finding after a Received: the find visits every

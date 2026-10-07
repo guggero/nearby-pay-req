@@ -332,6 +332,7 @@ func (s *sharer) handleWrite(central string, chunk []byte) error {
 	// The payer has our code once it has sent its nonce.
 	if out.Code != "" {
 		s.active.codeShown = true
+		log.Debugf("Nearby payee code shown for %s", central)
 		log.Tracef("Nearby payee code %s for %s", out.Code, central)
 		if err := s.send(PeerConnected{Code: out.Code}); err != nil {
 			return err
