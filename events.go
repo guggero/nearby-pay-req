@@ -148,8 +148,8 @@ type Status struct {
 }
 
 // ShareEvent is one event of a running share. It is one of ShareStarted,
-// AvailabilityChanged, PeerConnected, Delivered, Chosen, SessionFailed,
-// SuspiciousActivity or NFCRead.
+// AvailabilityChanged, PeerConnected, Delivered, Chosen, ComparisonExpired,
+// SessionFailed, SuspiciousActivity or NFCRead.
 type ShareEvent interface {
 	shareEvent()
 }
@@ -187,6 +187,10 @@ type PeerConnected struct {
 // it. Code is the code of that session. It does not mean the payer's user
 // picked this request: in a room with several payees the payer may collect
 // several and its user picks one by its code, which arrives as Chosen.
+// The payee keeps showing Code and turns other payers away as busy until
+// that payer chose the request or Params.ComparisonTimeout passed (see
+// ComparisonExpired), so another payer cannot replace the code its user is
+// comparing.
 type Delivered struct {
 	Code string
 }
@@ -196,6 +200,14 @@ type Delivered struct {
 // Code is the code of that session. Unless ShareOptions.ContinueAfterChosen
 // is set, the share ends right after this event.
 type Chosen struct {
+	Code string
+}
+
+// ComparisonExpired reports that the hold on the code of the last delivered
+// session ended without its payer choosing the request: from now on another
+// payer's session may replace that code. The code stays valid for its
+// payer's comparison until then (see Params.ComparisonTimeout).
+type ComparisonExpired struct {
 	Code string
 }
 
@@ -262,6 +274,7 @@ func (AvailabilityChanged) findEvent()  {}
 func (PeerConnected) shareEvent()       {}
 func (Delivered) shareEvent()           {}
 func (Chosen) shareEvent()              {}
+func (ComparisonExpired) shareEvent()   {}
 func (SessionFailed) shareEvent()       {}
 func (SessionFailed) findEvent()        {}
 func (SuspiciousActivity) shareEvent()  {}

@@ -17,8 +17,9 @@ const (
 	defaultSessionRateWindow    = time.Minute
 	defaultSuspiciousThreshold  = 3
 	defaultSuspiciousWindow     = time.Minute
-	defaultBusyRetryDelay       = 1500 * time.Millisecond
-	defaultMaxBusyRetries       = 3
+	defaultBusyRetryDelay       = 2 * time.Second
+	defaultMaxBusyRetries       = 12
+	defaultComparisonTimeout    = 20 * time.Second
 	defaultChosenRetention      = 2 * time.Minute
 	defaultChooseAttempts       = 3
 	defaultChooseRetryDelay     = time.Second
@@ -88,14 +89,22 @@ type Params struct {
 	SuspiciousWindow time.Duration
 
 	// BusyRetryDelay is how long a payer waits before trying a sharer
-	// again that answered busy (serving another payer or rate limiting).
-	// In a room with several payers this is what lets everyone get the
-	// request in turn.
+	// again that answered busy (serving another payer, holding another
+	// payer's comparison, or rate limiting). In a room with several
+	// payers this is what lets everyone get the request in turn.
 	BusyRetryDelay time.Duration
 
 	// MaxBusyRetries is how often a payer retries a busy sharer within
-	// one find before skipping it for the rest of the find.
+	// one find before skipping it for the rest of the find. Together
+	// with BusyRetryDelay it should outlast a ComparisonTimeout.
 	MaxBusyRetries int
+
+	// ComparisonTimeout is how long a comparison lasts. A payee keeps
+	// the code of a delivered session on screen that long, turning
+	// other payers away as busy, unless that session's payer chose the
+	// request sooner; a payer's Received is only good for confirming
+	// that long (see Received.ExpiresAt).
+	ComparisonTimeout time.Duration
 
 	// ChosenRetention is how long a payee remembers a delivered session,
 	// so a payer whose user picks that request later can still tell the
@@ -158,6 +167,7 @@ func DefaultParams() Params {
 		SuspiciousWindow:     defaultSuspiciousWindow,
 		BusyRetryDelay:       defaultBusyRetryDelay,
 		MaxBusyRetries:       defaultMaxBusyRetries,
+		ComparisonTimeout:    defaultComparisonTimeout,
 		ChosenRetention:      defaultChosenRetention,
 		ChooseAttempts:       defaultChooseAttempts,
 		ChooseRetryDelay:     defaultChooseRetryDelay,
@@ -194,6 +204,7 @@ func (p Params) withDefaults() Params {
 	duration(&p.SessionRateWindow, d.SessionRateWindow)
 	duration(&p.SuspiciousWindow, d.SuspiciousWindow)
 	duration(&p.BusyRetryDelay, d.BusyRetryDelay)
+	duration(&p.ComparisonTimeout, d.ComparisonTimeout)
 	duration(&p.ChosenRetention, d.ChosenRetention)
 	duration(&p.ChooseRetryDelay, d.ChooseRetryDelay)
 	duration(&p.ScanStopDebounce, d.ScanStopDebounce)

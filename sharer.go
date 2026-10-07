@@ -54,6 +54,14 @@ type payeeRun struct {
 	token     *[wire.ChosenTokenLen]byte
 }
 
+// heldComparison is the delivered session whose code a payee keeps on
+// screen, unchanged, while its payer's user compares it.
+type heldComparison struct {
+	code  string
+	token [wire.ChosenTokenLen]byte
+	until time.Time
+}
+
 // deliveredSession is a session whose payer acknowledged the request,
 // remembered so that payer can still say its user chose it.
 type deliveredSession struct {
@@ -118,6 +126,11 @@ type sharer struct {
 	// delivered maps the chosen token of every recently delivered
 	// session to what is needed to report a CHOSEN for it.
 	delivered map[[wire.ChosenTokenLen]byte]deliveredSession
+
+	// held is the comparison of the last delivered session while its
+	// hold lasts. Meanwhile no other session starts, so no other payer
+	// can replace the code its payer is comparing.
+	held *heldComparison
 }
 
 // run shares until ctx ends or the stream breaks.
@@ -181,7 +194,9 @@ func (s *sharer) run(ctx context.Context) error {
 		// A housekeeping deadline passed.
 		case <-s.wake:
 			s.wake, s.wakeAt = nil, time.Time{}
-			s.housekeep()
+			if err := s.housekeep(); err != nil {
+				return err
+			}
 
 		// A reader finished reading the NFC tag.
 		case <-s.nfcReads:
@@ -231,6 +246,9 @@ func (s *sharer) schedule() {
 	for _, d := range s.delivered {
 		earliest(d.at.Add(s.params.ChosenRetention))
 	}
+	if s.held != nil {
+		earliest(s.held.until)
+	}
 
 	if next.Equal(s.wakeAt) {
 		return
@@ -244,9 +262,10 @@ func (s *sharer) schedule() {
 }
 
 // housekeep drops every payer that let its first-message deadline pass,
-// whatever it sends later being ignored, and forgets expired tokens, so they
-// are gone by their deadline rather than whenever the next CHOSEN arrives.
-func (s *sharer) housekeep() {
+// whatever it sends later being ignored, forgets expired tokens, so they
+// are gone by their deadline rather than whenever the next CHOSEN arrives,
+// and ends an expired comparison hold.
+func (s *sharer) housekeep() error {
 	s.pruneDelivered()
 
 	now := s.clock.Now()
@@ -259,6 +278,14 @@ func (s *sharer) housekeep() {
 		s.radio.disconnectCentral(central)
 		delete(s.conns, central)
 	}
+
+	if s.held == nil || now.Before(s.held.until) {
+		return nil
+	}
+	code := s.held.code
+	s.held = nil
+
+	return s.send(ComparisonExpired{Code: code})
 }
 
 // timeoutActive ends the active session whose deadline passed.
@@ -537,8 +564,17 @@ func (s *sharer) handleWrite(central string, chunk []byte) error {
 		s.radio.disconnectCentral(central)
 		delete(s.conns, central)
 
+		// Hold the code for its comparison, so the next payer in
+		// line cannot replace it on screen in the meantime.
 		if token != nil {
 			s.rememberDelivered(*token, code)
+			s.held = &heldComparison{
+				code:  code,
+				token: *token,
+				until: s.clock.Now().Add(
+					s.params.ComparisonTimeout,
+				),
+			}
 		}
 
 		return s.send(Delivered{Code: code})
@@ -577,6 +613,11 @@ func (s *sharer) handleChosen(central string, conn *centralConn,
 	}
 	delete(s.delivered, token)
 	s.sendControl(central, conn, wire.EncodeChosenAck())
+
+	// The comparison is over: the next payer may come.
+	if s.held != nil && s.held.token == token {
+		s.held = nil
+	}
 
 	if err := s.send(Chosen{Code: ds.code}); err != nil {
 		return err
@@ -625,6 +666,18 @@ func (s *sharer) pruneDelivered() {
 // reports whether a session started.
 func (s *sharer) startSession(central string, conn *centralConn) (bool, error) {
 	now := s.clock.Now()
+
+	// A delivered code is still being compared: everyone else waits,
+	// as with a payer mid-session, and retries once the hold ends.
+	if s.held != nil && now.Before(s.held.until) {
+		log.Debugf("Holding a comparison, %s has to wait", central)
+		s.sendControl(central, conn, wire.EncodeAbort(wire.AbortBusy))
+		s.radio.disconnectCentral(central)
+		delete(s.conns, central)
+
+		return false, nil
+	}
+
 	s.sessionStarts = pruneBefore(
 		s.sessionStarts, now.Add(-s.params.SessionRateWindow),
 	)

@@ -171,7 +171,7 @@ func TestDeliveredTokensBounded(t *testing.T) {
 	// Inserting prunes, and the housekeeping at a token's deadline
 	// prunes without any insertion at all.
 	require.Len(t, d.delivered, 1)
-	d.housekeep()
+	require.NoError(t, d.housekeep())
 	require.Empty(t, d.delivered)
 
 	// A burst within the retention keeps only the newest tokens.
