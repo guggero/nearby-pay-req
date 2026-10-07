@@ -149,7 +149,7 @@ type Status struct {
 
 // ShareEvent is one event of a running share. It is one of ShareStarted,
 // AvailabilityChanged, PeerConnected, Delivered, Chosen, ComparisonExpired,
-// SessionFailed, SuspiciousActivity or NFCRead.
+// SessionFailed, SuspiciousActivity, AttemptLimitReached or NFCRead.
 type ShareEvent interface {
 	shareEvent()
 }
@@ -216,16 +216,28 @@ type SessionFailed struct {
 	Reason FailureReason
 }
 
-// SuspiciousActivity warns that unusually many sessions failed after
-// showing a code, which is what a man in the middle grinding for a matching
-// code looks like. It is sent at most once per Window.
+// SuspiciousActivity warns that unusually many sessions showed a code within
+// Window, which is what a man in the middle repeating sessions until a code
+// matches looks like. Every session that reached its code counts, whether
+// its payer acknowledged the request or not: an attacker would acknowledge
+// every attempt. It is a heuristic: several honest payers in quick
+// succession trigger it too. It is sent at most once per Window.
 type SuspiciousActivity struct {
-	// FailedSessions is how many sessions failed after their code was
-	// shown within Window.
-	FailedSessions int
+	// Sessions is how many sessions showed a code within Window.
+	Sessions int
 
-	// Window is the rolling window FailedSessions was counted in.
+	// Window is the rolling window Sessions was counted in.
 	Window time.Duration
+}
+
+// AttemptLimitReached reports that the share showed Params.MaxCodeAttempts
+// codes and stopped serving over BLE for good, which bounds how often an
+// attacker can try for a matching code however long the share runs. A
+// ShareStarted with BLE off follows; NFC keeps working. Sharing again
+// starts a new budget.
+type AttemptLimitReached struct {
+	// Attempts is how many sessions showed a code during the share.
+	Attempts int
 }
 
 // NFCRead reports that a reader read the emulated tag to the end.
@@ -278,6 +290,7 @@ func (ComparisonExpired) shareEvent()   {}
 func (SessionFailed) shareEvent()       {}
 func (SessionFailed) findEvent()        {}
 func (SuspiciousActivity) shareEvent()  {}
+func (AttemptLimitReached) shareEvent() {}
 func (NFCRead) shareEvent()             {}
 func (Scanning) findEvent()             {}
 func (TooFar) findEvent()               {}

@@ -6,29 +6,31 @@ import (
 
 // Default parameter values.
 const (
-	defaultSessionTimeout       = 10 * time.Second
-	defaultConnectTimeout       = 5 * time.Second
-	defaultCollectWindow        = 800 * time.Millisecond
-	defaultFindGiveUpAfter      = 20 * time.Second
-	defaultRSSIFloor            = -75
-	defaultRSSISmoothing        = 0.3
-	defaultMinSessionInterval   = time.Second
-	defaultMaxSessionsPerWindow = 30
-	defaultSessionRateWindow    = time.Minute
-	defaultSuspiciousThreshold  = 3
-	defaultSuspiciousWindow     = time.Minute
-	defaultBusyRetryDelay       = 2 * time.Second
-	defaultMaxBusyRetries       = 12
-	defaultComparisonTimeout    = 20 * time.Second
-	defaultChosenRetention      = 2 * time.Minute
-	defaultChooseAttempts       = 3
-	defaultChooseRetryDelay     = time.Second
-	defaultScanStopDebounce     = 2 * time.Second
-	defaultEventQueueLen        = 256
-	defaultFirstMessageTimeout  = 3 * time.Second
-	defaultMaxCentrals          = 8
-	defaultCandidateTTL         = 5 * time.Second
-	defaultMaxPeersPerFind      = 64
+	defaultSessionTimeout           = 10 * time.Second
+	defaultConnectTimeout           = 5 * time.Second
+	defaultCollectWindow            = 800 * time.Millisecond
+	defaultFindGiveUpAfter          = 20 * time.Second
+	defaultRSSIFloor                = -75
+	defaultRSSISmoothing            = 0.3
+	defaultMinSessionInterval       = time.Second
+	defaultMaxSessionsPerWindow     = 30
+	defaultSessionRateWindow        = time.Minute
+	defaultSuspiciousThreshold      = 4
+	defaultSuspiciousWindow         = time.Minute
+	defaultBusyRetryDelay           = 2 * time.Second
+	defaultMaxBusyRetries           = 12
+	defaultComparisonTimeout        = 20 * time.Second
+	defaultMaxCodeAttemptsPerWindow = 6
+	defaultMaxCodeAttempts          = 50
+	defaultChosenRetention          = 2 * time.Minute
+	defaultChooseAttempts           = 3
+	defaultChooseRetryDelay         = time.Second
+	defaultScanStopDebounce         = 2 * time.Second
+	defaultEventQueueLen            = 256
+	defaultFirstMessageTimeout      = 3 * time.Second
+	defaultMaxCentrals              = 8
+	defaultCandidateTTL             = 5 * time.Second
+	defaultMaxPeersPerFind          = 64
 )
 
 // Params are the timing, selection and rate-limiting knobs of the Manager.
@@ -81,8 +83,21 @@ type Params struct {
 	// SessionRateWindow is the rolling window of MaxSessionsPerWindow.
 	SessionRateWindow time.Duration
 
-	// SuspiciousThreshold is how many sessions that failed after showing
-	// a code, within SuspiciousWindow, raise a SuspiciousActivity.
+	// MaxCodeAttemptsPerWindow caps the sessions per SessionRateWindow
+	// that may reach their code, whatever their outcome. Each is one
+	// chance in a million for a man in the middle; honest payers rarely
+	// need more than a few, since every delivered code is held for
+	// ComparisonTimeout.
+	MaxCodeAttemptsPerWindow int
+
+	// MaxCodeAttempts caps the sessions that may reach their code during
+	// one share. Once reached, the payee stops serving over BLE (see
+	// AttemptLimitReached), so an attacker's chance stays below
+	// MaxCodeAttempts in a million per share however long it runs.
+	MaxCodeAttempts int
+
+	// SuspiciousThreshold is how many sessions that showed a code,
+	// within SuspiciousWindow, raise a SuspiciousActivity.
 	SuspiciousThreshold int
 
 	// SuspiciousWindow is the rolling window of SuspiciousThreshold.
@@ -154,29 +169,31 @@ type Params struct {
 // otherwise.
 func DefaultParams() Params {
 	return Params{
-		SessionTimeout:       defaultSessionTimeout,
-		ConnectTimeout:       defaultConnectTimeout,
-		CollectWindow:        defaultCollectWindow,
-		FindGiveUpAfter:      defaultFindGiveUpAfter,
-		RSSIFloor:            defaultRSSIFloor,
-		RSSISmoothing:        defaultRSSISmoothing,
-		MinSessionInterval:   defaultMinSessionInterval,
-		MaxSessionsPerWindow: defaultMaxSessionsPerWindow,
-		SessionRateWindow:    defaultSessionRateWindow,
-		SuspiciousThreshold:  defaultSuspiciousThreshold,
-		SuspiciousWindow:     defaultSuspiciousWindow,
-		BusyRetryDelay:       defaultBusyRetryDelay,
-		MaxBusyRetries:       defaultMaxBusyRetries,
-		ComparisonTimeout:    defaultComparisonTimeout,
-		ChosenRetention:      defaultChosenRetention,
-		ChooseAttempts:       defaultChooseAttempts,
-		ChooseRetryDelay:     defaultChooseRetryDelay,
-		ScanStopDebounce:     defaultScanStopDebounce,
-		EventQueueLen:        defaultEventQueueLen,
-		FirstMessageTimeout:  defaultFirstMessageTimeout,
-		MaxCentrals:          defaultMaxCentrals,
-		CandidateTTL:         defaultCandidateTTL,
-		MaxPeersPerFind:      defaultMaxPeersPerFind,
+		SessionTimeout:           defaultSessionTimeout,
+		ConnectTimeout:           defaultConnectTimeout,
+		CollectWindow:            defaultCollectWindow,
+		FindGiveUpAfter:          defaultFindGiveUpAfter,
+		RSSIFloor:                defaultRSSIFloor,
+		RSSISmoothing:            defaultRSSISmoothing,
+		MinSessionInterval:       defaultMinSessionInterval,
+		MaxSessionsPerWindow:     defaultMaxSessionsPerWindow,
+		SessionRateWindow:        defaultSessionRateWindow,
+		SuspiciousThreshold:      defaultSuspiciousThreshold,
+		SuspiciousWindow:         defaultSuspiciousWindow,
+		BusyRetryDelay:           defaultBusyRetryDelay,
+		MaxBusyRetries:           defaultMaxBusyRetries,
+		ComparisonTimeout:        defaultComparisonTimeout,
+		MaxCodeAttemptsPerWindow: defaultMaxCodeAttemptsPerWindow,
+		MaxCodeAttempts:          defaultMaxCodeAttempts,
+		ChosenRetention:          defaultChosenRetention,
+		ChooseAttempts:           defaultChooseAttempts,
+		ChooseRetryDelay:         defaultChooseRetryDelay,
+		ScanStopDebounce:         defaultScanStopDebounce,
+		EventQueueLen:            defaultEventQueueLen,
+		FirstMessageTimeout:      defaultFirstMessageTimeout,
+		MaxCentrals:              defaultMaxCentrals,
+		CandidateTTL:             defaultCandidateTTL,
+		MaxPeersPerFind:          defaultMaxPeersPerFind,
 	}
 }
 
@@ -217,6 +234,8 @@ func (p Params) withDefaults() Params {
 	count(&p.EventQueueLen, d.EventQueueLen)
 	count(&p.MaxCentrals, d.MaxCentrals)
 	count(&p.MaxPeersPerFind, d.MaxPeersPerFind)
+	count(&p.MaxCodeAttemptsPerWindow, d.MaxCodeAttemptsPerWindow)
+	count(&p.MaxCodeAttempts, d.MaxCodeAttempts)
 
 	// RSSI is negative by nature, so only the unset zero means the
 	// default.

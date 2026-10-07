@@ -49,9 +49,8 @@ type payeeRun struct {
 	deadline   <-chan time.Time
 	deadlineAt time.Time
 
-	codeShown bool
-	lastCode  string
-	token     *[wire.ChosenTokenLen]byte
+	lastCode string
+	token    *[wire.ChosenTokenLen]byte
 }
 
 // heldComparison is the delivered session whose code a payee keeps on
@@ -117,11 +116,16 @@ type sharer struct {
 	wake   <-chan time.Time
 	wakeAt time.Time
 
-	// sessionStarts and codeFailures are the rolling windows for rate
-	// limiting and the suspicious-activity warning.
-	sessionStarts []time.Time
-	codeFailures  []time.Time
-	warnedAt      time.Time
+	// sessionStarts and codeAttempts are the rolling windows for rate
+	// limiting sessions and code attempts, the latter also feeding the
+	// suspicious-activity warning. totalCodeAttempts counts every code
+	// attempt of the share; exhausted is set once they reached
+	// MaxCodeAttempts and BLE stopped for good.
+	sessionStarts     []time.Time
+	codeAttempts      []time.Time
+	warnedAt          time.Time
+	totalCodeAttempts int
+	exhausted         bool
 
 	// delivered maps the chosen token of every recently delivered
 	// session to what is needed to report a CHOSEN for it.
@@ -164,6 +168,10 @@ func (s *sharer) run(ctx context.Context) error {
 	}
 
 	for {
+		if err := s.reviewAttempts(); err != nil {
+			return err
+		}
+
 		// An expired session ends before anything else is handled,
 		// so a steady stream of events cannot keep it alive.
 		if s.active != nil &&
@@ -347,10 +355,10 @@ func (s *sharer) refreshBLE(initial bool) (bool, error) {
 	s.lastAvailability = avail
 
 	switch {
-	// Available and not yet advertising: start. A failure to start
-	// leaves BLE off but the share (and NFC) running.
-	case avail == Available &&
-		!s.advertising:
+	// Available and not yet advertising: start, unless the share used
+	// up its code attempts. A failure to start leaves BLE off but the
+	// share (and NFC) running.
+	case avail == Available && !s.advertising && !s.exhausted:
 
 		if err := s.radio.startAdvertising(s.events); err != nil {
 			log.Warnf("Starting nearby advertising failed: %v", err)
@@ -380,7 +388,7 @@ func (s *sharer) refreshBLE(initial bool) (bool, error) {
 		return false, nil
 
 	// Still unavailable, for a different reason.
-	case changed && !s.advertising:
+	case changed && !s.advertising && avail != Available:
 		return false, s.sendAvailability(avail)
 
 	default:
@@ -431,33 +439,22 @@ func (s *sharer) handleEvent(ev event) error {
 	case evWrite:
 		return s.handleWrite(ev.id, ev.chunk)
 
-	// A payer left; mid-session that ends the session. Only a session
-	// that already showed its code counts towards the suspicious-activity
-	// warning: a payer that drops before sending its nonce never learned
-	// a code, so it cannot have been grinding for one.
+	// A payer left; mid-session that ends the session.
 	case evCentralGone:
 		delete(s.conns, ev.id)
 		if s.active == nil || s.active.central != ev.id {
 			return nil
 		}
-		codeShown := s.active.codeShown
 		s.active = nil
 
-		return s.sessionFailed(
-			FailureConnectFailed,
-			codeShown,
-		)
+		return s.sessionFailed(FailureConnectFailed)
 
 	// The OS stopped our advertisement. Keep the share (NFC may still
 	// work) but report BLE as down.
 	case evAdvertisingFailed:
 		log.Warnf("Nearby advertising failed: %s", ev.reason)
 		s.stopBLE()
-		err := s.sessionFailed(
-			FailureRadioError,
-			false,
-		)
-		if err != nil {
+		if err := s.sessionFailed(FailureRadioError); err != nil {
 			return err
 		}
 
@@ -526,10 +523,10 @@ func (s *sharer) handleWrite(central string, chunk []byte) error {
 	}
 
 	// Once we know the code, the payer learns it from what we send
-	// next, so the session counts as having shown a code even if that
-	// send fails.
+	// next, so the session counts as a code attempt even if that send
+	// fails.
 	if out.Code != "" {
-		s.active.codeShown = true
+		s.recordCodeAttempt()
 	}
 	err = s.notifyAll(central, conn, out.Send, s.active.deadlineAt)
 	switch {
@@ -681,13 +678,16 @@ func (s *sharer) startSession(central string, conn *centralConn) (bool, error) {
 	s.sessionStarts = pruneBefore(
 		s.sessionStarts, now.Add(-s.params.SessionRateWindow),
 	)
-	limited := len(
-		s.sessionStarts,
-	) >= s.params.MaxSessionsPerWindow || len(
-		s.sessionStarts,
-	) > 0 &&
+	s.codeAttempts = pruneBefore(
+		s.codeAttempts, now.Add(-s.params.SessionRateWindow),
+	)
+	tooSoon := len(s.sessionStarts) > 0 &&
 		now.Sub(s.sessionStarts[len(s.sessionStarts)-1]) <
 			s.params.MinSessionInterval
+	limited := tooSoon ||
+		len(s.sessionStarts) >= s.params.MaxSessionsPerWindow ||
+		len(s.codeAttempts) >= s.params.MaxCodeAttemptsPerWindow ||
+		s.exhausted
 	if limited {
 		log.Debugf("Rate limiting nearby session from %s", central)
 		s.sendControl(central, conn, wire.EncodeAbort(wire.AbortBusy))
@@ -729,13 +729,9 @@ func (s *sharer) dropCentral(central string, err error) error {
 	if s.active == nil || s.active.central != central {
 		return nil
 	}
-	codeShown := s.active.codeShown
 	s.active = nil
 
-	return s.sessionFailed(
-		FailureProtocolError,
-		codeShown,
-	)
+	return s.sessionFailed(FailureProtocolError)
 }
 
 // abortActive tells the active payer the session ends, best effort and
@@ -764,43 +760,74 @@ func (s *sharer) failActive(reason FailureReason) error {
 	if s.active == nil {
 		return nil
 	}
-	central, codeShown := s.active.central, s.active.codeShown
+	central := s.active.central
 	s.active = nil
 	s.radio.disconnectCentral(central)
 	delete(s.conns, central)
 
-	return s.sessionFailed(reason, codeShown)
+	return s.sessionFailed(reason)
 }
 
-// sessionFailed reports a failed session and, if the session had already
-// shown a code, counts it towards the suspicious-activity warning: a man in
-// the middle grinding for a matching code produces exactly such failures.
-func (s *sharer) sessionFailed(reason FailureReason,
-	codeShown bool) error {
+// sessionFailed reports a failed session. Whether it counts as a code
+// attempt was settled when, and if, it reached its code.
+func (s *sharer) sessionFailed(reason FailureReason) error {
+	return s.send(SessionFailed{Reason: reason})
+}
 
-	err := s.send(SessionFailed{Reason: reason})
-	if err != nil || !codeShown {
-		return err
+// recordCodeAttempt counts a session that reached its code. Every such
+// session counts, whatever comes of it: the payer learns the code, and an
+// acknowledgement is the payer's word only, so a man in the middle grinding
+// for a matching code would simply acknowledge every attempt.
+func (s *sharer) recordCodeAttempt() {
+	now := s.clock.Now()
+	s.codeAttempts = append(
+		pruneBefore(s.codeAttempts, now.Add(-s.params.SessionRateWindow)),
+		now,
+	)
+	s.totalCodeAttempts++
+}
+
+// reviewAttempts warns once a share saw SuspiciousThreshold code attempts
+// within SuspiciousWindow, at most once per window, and stops serving over
+// BLE once the share used up its MaxCodeAttempts. It runs between events,
+// so the session that tipped either is reported first, and it waits for a
+// held comparison to end, so that payer can still choose.
+func (s *sharer) reviewAttempts() error {
+	now := s.clock.Now()
+	recent := 0
+	for _, at := range s.codeAttempts {
+		if !at.Before(now.Add(-s.params.SuspiciousWindow)) {
+			recent++
+		}
+	}
+	if recent >= s.params.SuspiciousThreshold &&
+		now.Sub(s.warnedAt) >= s.params.SuspiciousWindow {
+
+		s.warnedAt = now
+		err := s.send(SuspiciousActivity{
+			Sessions: recent,
+			Window:   s.params.SuspiciousWindow,
+		})
+		if err != nil {
+			return err
+		}
 	}
 
-	now := s.clock.Now()
-	s.codeFailures = pruneBefore(
-		s.codeFailures, now.Add(-s.params.SuspiciousWindow),
-	)
-	s.codeFailures = append(s.codeFailures, now)
-
-	// Warn once per window, not on every further failure.
-	if len(s.codeFailures) < s.params.SuspiciousThreshold ||
-		now.Sub(s.warnedAt) < s.params.SuspiciousWindow {
+	if s.exhausted || s.totalCodeAttempts < s.params.MaxCodeAttempts ||
+		s.active != nil || s.held != nil {
 
 		return nil
 	}
-	s.warnedAt = now
+	log.Infof("Nearby share used up its %d code attempts, stopping BLE",
+		s.totalCodeAttempts)
+	s.exhausted = true
+	s.stopBLE()
+	err := s.send(AttemptLimitReached{Attempts: s.totalCodeAttempts})
+	if err != nil {
+		return err
+	}
 
-	return s.send(SuspiciousActivity{
-		FailedSessions: len(s.codeFailures),
-		Window:         s.params.SuspiciousWindow,
-	})
+	return s.sendStarted()
 }
 
 // notifyAll sends messages to a payer, every chunk before until.

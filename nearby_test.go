@@ -225,8 +225,9 @@ func TestRateLimit(t *testing.T) {
 	require.Equal(t, wire.AbortBusy, reason)
 }
 
-// TestSuspiciousActivity checks the warning for sessions that fail after a
-// code was shown, the signature of someone grinding for a matching code.
+// TestSuspiciousActivity checks the warning for many sessions showing a
+// code within a minute, the signature of someone grinding for a matching
+// code.
 func TestSuspiciousActivity(t *testing.T) {
 	t.Parallel()
 
@@ -237,11 +238,20 @@ func TestSuspiciousActivity(t *testing.T) {
 	share := payee.share(t, testRequest, false)
 	expectStarted(t, share, true, false)
 
-	for i := 0; i < defaultSuspiciousThreshold; i++ {
+	// The warning comes as soon as the session that tips it showed
+	// its code.
+	for i := range defaultSuspiciousThreshold {
 		payee.advance(defaultMinSessionInterval)
 		r.connect(t, "payee")
 		r.runUntilCode(t, "payee")
 		nextAs[PeerConnected](t, share)
+		if i == defaultSuspiciousThreshold-1 {
+			warning := nextAs[SuspiciousActivity](t, share)
+			require.Equal(
+				t, defaultSuspiciousThreshold, warning.Sessions,
+			)
+			require.Equal(t, time.Minute, warning.Window)
+		}
 		r.disconnect("payee")
 		require.Equal(
 			t,
@@ -249,10 +259,6 @@ func TestSuspiciousActivity(t *testing.T) {
 			nextAs[SessionFailed](t, share).Reason,
 		)
 	}
-
-	warning := nextAs[SuspiciousActivity](t, share)
-	require.Equal(t, defaultSuspiciousThreshold, warning.FailedSessions)
-	require.Equal(t, time.Minute, warning.Window)
 }
 
 // TestSessionTimeout checks that a stalled payer is dropped after
@@ -593,16 +599,20 @@ func TestDisconnectBeforeCodeIsNotSuspicious(t *testing.T) {
 
 	// The warning still needs defaultSuspiciousThreshold sessions that
 	// showed a code; the drops above were not among them.
-	for i := 0; i < defaultSuspiciousThreshold; i++ {
+	for i := range defaultSuspiciousThreshold {
 		payee.advance(defaultMinSessionInterval)
 		r.connect(t, "payee")
 		r.runUntilCode(t, "payee")
 		nextAs[PeerConnected](t, share)
+		if i == defaultSuspiciousThreshold-1 {
+			warning := nextAs[SuspiciousActivity](t, share)
+			require.Equal(
+				t, defaultSuspiciousThreshold, warning.Sessions,
+			)
+		}
 		r.disconnect("payee")
 		nextAs[SessionFailed](t, share)
 	}
-	warning := nextAs[SuspiciousActivity](t, share)
-	require.Equal(t, defaultSuspiciousThreshold, warning.FailedSessions)
 }
 
 // TestWriteFailureFailsFast checks that a payer whose write to the sharer
