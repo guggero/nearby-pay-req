@@ -1,10 +1,12 @@
 package nearby
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/guggero/nearby-pay-req/nearbytest"
+	"github.com/guggero/nearby-pay-req/radio"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/stretchr/testify/require"
 )
@@ -65,6 +67,7 @@ func TestLateConnectionEvents(t *testing.T) {
 	payer := newNode(t, world, "payer")
 	var sent []FindEvent
 	f := &finder{
+		ctx:    t.Context(),
 		radio:  payer.mgr.radio,
 		clock:  payer.clock,
 		params: payer.params,
@@ -108,4 +111,42 @@ func TestLateConnectionEvents(t *testing.T) {
 	require.Equal(t, []FindEvent{
 		SessionFailed{Reason: FailureConnectFailed},
 	}, sent)
+}
+
+// disconnectRecorder records the links the mux closes.
+type disconnectRecorder struct {
+	radio.Radio
+
+	closed []string
+}
+
+// Disconnect implements radio.Radio.
+func (d *disconnectRecorder) Disconnect(peer string, connID int) {
+	d.closed = append(d.closed, fmt.Sprintf("%s/%d", peer, connID))
+}
+
+// DisconnectCentral implements radio.Radio.
+func (d *disconnectRecorder) DisconnectCentral(central string) {
+	d.closed = append(d.closed, central)
+}
+
+// TestLateInterrupt checks that the interrupt of a cancelled call, which
+// may run after that call returned, only closes a link its own call blocks
+// on, never one a later call is using.
+func TestLateInterrupt(t *testing.T) {
+	t.Parallel()
+
+	native := &disconnectRecorder{}
+	mux := &radioMux{native: native}
+	first, second := mux.newOwner(), mux.newOwner()
+
+	mux.findOp = &inflight{owner: second, peer: "payee", connID: 7}
+	mux.shareOp = &inflight{owner: second, peer: "payer"}
+	mux.interruptFind(first)
+	mux.interruptShare(first)
+	require.Empty(t, native.closed)
+
+	mux.interruptFind(second)
+	mux.interruptShare(second)
+	require.Equal(t, []string{"payee/7", "payer"}, native.closed)
 }

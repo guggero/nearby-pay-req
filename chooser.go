@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/guggero/nearby-pay-req/wire"
 	"github.com/lightningnetwork/lnd/clock"
@@ -75,6 +76,10 @@ type chooser struct {
 	peer   string
 	token  [wire.ChosenTokenLen]byte
 	events sink
+
+	// owner identifies the Choose's blocking radio calls (see
+	// radioMux.newOwner).
+	owner uint64
 }
 
 // run tries to deliver the CHOSEN message until the payee answered, the
@@ -86,6 +91,14 @@ func (c *chooser) run(ctx context.Context) error {
 		return fmt.Errorf("%w: %v", ErrChooseFailed, err)
 	}
 	defer c.radio.stopScan()
+
+	// A write blocked in the native stack when Choose ends is cut
+	// short instead of running into its timeout.
+	c.owner = c.radio.newOwner()
+	stopInterrupt := context.AfterFunc(ctx, func() {
+		c.radio.interruptFind(c.owner)
+	})
+	defer stopInterrupt()
 
 	var lastErr error
 	for attempt := 0; attempt < c.params.ChooseAttempts; attempt++ {
@@ -147,15 +160,19 @@ func (c *chooser) attempt(ctx context.Context) error {
 			}
 
 			switch ev.kind {
-			// Linked: send the token, then wait for the answer.
+			// Linked: send the token, then wait for the answer,
+			// all within the session timeout.
 			case evConnected:
-				err := c.write(connID, ev.maxChunk)
-				if err != nil {
-					return err
-				}
+				until := c.clock.Now().Add(
+					c.params.SessionTimeout,
+				)
 				deadline = c.clock.TickAfter(
 					c.params.SessionTimeout,
 				)
+				err := c.write(ctx, connID, ev.maxChunk, until)
+				if err != nil {
+					return err
+				}
 
 			// The answer, possibly in chunks.
 			case evNotify:
@@ -175,14 +192,23 @@ func (c *chooser) attempt(ctx context.Context) error {
 }
 
 // write sends the CHOSEN message on connection connID in chunks of at most
-// maxChunk.
-func (c *chooser) write(connID, maxChunk int) error {
+// maxChunk, every chunk before until.
+func (c *chooser) write(ctx context.Context, connID, maxChunk int,
+	until time.Time) error {
+
 	chunks, err := wire.Chunk(wire.EncodeChosen(c.token), maxChunk)
 	if err != nil {
 		return err
 	}
 	for _, chunk := range chunks {
-		err := c.radio.write(c.peer, connID, chunk, nativeOpTimeout)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		remaining := until.Sub(c.clock.Now())
+		if remaining <= 0 {
+			return errChooseTimeout
+		}
+		err := c.radio.write(c.owner, c.peer, connID, chunk, remaining)
 		if err != nil {
 			return err
 		}

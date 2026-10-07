@@ -3,6 +3,7 @@ package nearby
 import (
 	"bytes"
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -13,8 +14,21 @@ import (
 )
 
 const (
-	// nativeOpTimeout bounds one blocking native write or notification.
-	nativeOpTimeout = 2 * time.Second
+	// controlSendTimeout bounds sending a message that belongs to no
+	// session deadline: a BUSY turning a payer away, the answer to a
+	// CHOSEN, or an ABORT for malformed input. Each is one chunk.
+	controlSendTimeout = time.Second
+
+	// abortSendTimeout bounds the best-effort ABORT sent once a session
+	// deadline passed, which is all a session may overrun its deadline
+	// by.
+	abortSendTimeout = 250 * time.Millisecond
+)
+
+var (
+	// errDeadline ends sending a message whose deadline passed before
+	// all of its chunks went out.
+	errDeadline = errors.New("deadline passed")
 )
 
 // eventKind is what a radio event reports.
@@ -111,6 +125,16 @@ type radioMux struct {
 	// lastConnID is the last connection id handed out by connect.
 	lastConnID atomic.Int64
 
+	// shareOp is the Notify a share blocks on, and findOp the Write a
+	// find or Choose blocks on, so cancelling the call can close that
+	// link and make the native call return at once (see interruptShare
+	// and interruptFind). Each records the call it belongs to, numbered
+	// by lastOwner: a cancelled call's interrupt can run after the call
+	// returned, and must then leave its successor's operation alone.
+	shareOp   *inflight
+	findOp    *inflight
+	lastOwner atomic.Uint64
+
 	*fn.ContextGuard
 }
 
@@ -164,11 +188,51 @@ func (r *radioMux) stopAdvertising() {
 	r.mu.Unlock()
 }
 
-// notify sends one chunk to a central, blocking for at most timeout.
-func (r *radioMux) notify(central string, chunk []byte,
+// inflight is one blocking native call: of which share, find or Choose
+// (owner), on which link.
+type inflight struct {
+	owner  uint64
+	peer   string
+	connID int
+}
+
+// newOwner numbers a share, find or Choose for its blocking calls.
+func (r *radioMux) newOwner() uint64 {
+	return r.lastOwner.Add(1)
+}
+
+// notify sends one chunk to a central for owner, blocking for at most
+// timeout.
+func (r *radioMux) notify(owner uint64, central string, chunk []byte,
 	timeout time.Duration) error {
 
+	op := &inflight{owner: owner, peer: central}
+	r.mu.Lock()
+	r.shareOp = op
+	r.mu.Unlock()
+	defer func() {
+		r.mu.Lock()
+		if r.shareOp == op {
+			r.shareOp = nil
+		}
+		r.mu.Unlock()
+	}()
+
 	return r.native.Notify(central, chunk, millis(timeout))
+}
+
+// interruptShare makes owner's blocked Notify return at once by
+// disconnecting the central it sends to. It runs when that share is
+// cancelled, which disconnects every central right after anyway, and does
+// nothing once a later share sends.
+func (r *radioMux) interruptShare(owner uint64) {
+	r.mu.Lock()
+	op := r.shareOp
+	r.mu.Unlock()
+
+	if op != nil && op.owner == owner {
+		r.native.DisconnectCentral(op.peer)
+	}
 }
 
 // disconnectCentral drops one central.
@@ -185,12 +249,37 @@ func (r *radioMux) connect(peer string) (int, error) {
 	return connID, err
 }
 
-// write writes one chunk on connection connID, blocking for at most
-// timeout.
-func (r *radioMux) write(peer string, connID int, chunk []byte,
-	timeout time.Duration) error {
+// write writes one chunk on connection connID for owner, blocking for at
+// most timeout.
+func (r *radioMux) write(owner uint64, peer string, connID int,
+	chunk []byte, timeout time.Duration) error {
+
+	op := &inflight{owner: owner, peer: peer, connID: connID}
+	r.mu.Lock()
+	r.findOp = op
+	r.mu.Unlock()
+	defer func() {
+		r.mu.Lock()
+		if r.findOp == op {
+			r.findOp = nil
+		}
+		r.mu.Unlock()
+	}()
 
 	return r.native.Write(peer, connID, chunk, millis(timeout))
+}
+
+// interruptFind makes owner's blocked Write return at once by closing the
+// connection it writes on, which the cancelled find or Choose closes right
+// after anyway. It does nothing once a later find or Choose writes.
+func (r *radioMux) interruptFind(owner uint64) {
+	r.mu.Lock()
+	op := r.findOp
+	r.mu.Unlock()
+
+	if op != nil && op.owner == owner {
+		r.native.Disconnect(op.peer, op.connID)
+	}
 }
 
 // disconnect closes connection connID to peer.

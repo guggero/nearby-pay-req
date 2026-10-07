@@ -15,6 +15,9 @@ var (
 	// ErrScanFailed ends a find whose native scan stopped. Restarting
 	// the find usually works.
 	ErrScanFailed = errors.New("nearby scan failed")
+
+	// errNotConnected refuses a write before the connection is up.
+	errNotConnected = errors.New("not connected")
 )
 
 // candidate is one sharer seen while scanning.
@@ -29,13 +32,26 @@ type payerRun struct {
 	sess      *session.PayerSession
 	maxChunk  int
 	reasm     wire.Reassembler
-	deadline  <-chan time.Time
 	connected bool
+
+	// deadline fires at deadlineAt, when connecting or the session has
+	// to be over. Writing checks deadlineAt before every chunk, so a
+	// slow sharer cannot stretch the session past it.
+	deadline   <-chan time.Time
+	deadlineAt time.Time
 }
 
 // finder searches for one payment request until it receives one or its
 // context ends.
 type finder struct {
+	// ctx is the find's context, checked between the chunks of a
+	// message so a cancelled find stops writing at once.
+	ctx context.Context
+
+	// owner identifies the find's blocking radio calls (see
+	// radioMux.newOwner).
+	owner uint64
+
 	radio  *radioMux
 	clock  clock.Clock
 	rand   io.Reader
@@ -68,6 +84,7 @@ type finder struct {
 // run searches until a payment request was received (nil), ctx ends, the
 // stream breaks or the scan fails.
 func (f *finder) run(ctx context.Context) error {
+	f.ctx = ctx
 	f.events = make(sink, f.params.EventQueueLen)
 	f.candidates = make(map[string]*candidate)
 	f.failed = make(map[string]bool)
@@ -76,11 +93,30 @@ func (f *finder) run(ctx context.Context) error {
 	f.retryAt = make(map[string]time.Time)
 	defer f.stopScan(false)
 
+	// A write blocked in the native stack when the find ends is cut
+	// short instead of running into its timeout.
+	f.owner = f.radio.newOwner()
+	stopInterrupt := context.AfterFunc(ctx, func() {
+		f.radio.interruptFind(f.owner)
+	})
+	defer stopInterrupt()
+
 	if err := f.refresh(true); err != nil {
 		return err
 	}
 
 	for {
+		// An expired session ends before anything else is handled,
+		// so a steady stream of events cannot keep it alive.
+		if f.active != nil &&
+			!f.clock.Now().Before(f.active.deadlineAt) {
+
+			if err := f.timeoutActive(); err != nil {
+				return err
+			}
+			continue
+		}
+
 		var deadline <-chan time.Time
 		if f.active != nil {
 			deadline = f.active.deadline
@@ -116,11 +152,7 @@ func (f *finder) run(ctx context.Context) error {
 
 		// Connecting or the session took too long.
 		case <-deadline:
-			f.write(wire.EncodeAbort(wire.AbortTimeout))
-			err := f.failActive(
-				FailureTimeout,
-			)
-			if err != nil {
+			if err := f.timeoutActive(); err != nil {
 				return err
 			}
 
@@ -306,8 +338,9 @@ func (f *finder) pick() error {
 
 	log.Debugf("Connecting to nearby sharer %s (rssi %.0f)", best, bestDB)
 	f.active = &payerRun{
-		peer:     best,
-		deadline: f.clock.TickAfter(f.params.ConnectTimeout),
+		peer:       best,
+		deadline:   f.clock.TickAfter(f.params.ConnectTimeout),
+		deadlineAt: f.clock.Now().Add(f.params.ConnectTimeout),
 	}
 	if err := f.send(Connecting{}); err != nil {
 		return err
@@ -343,11 +376,10 @@ func (f *finder) startSession(maxChunk int) error {
 	f.active.maxChunk = maxChunk
 	f.active.connected = true
 	f.active.deadline = f.clock.TickAfter(f.params.SessionTimeout)
+	f.active.deadlineAt = f.clock.Now().Add(f.params.SessionTimeout)
 
-	if !f.writeAll(out.Send) {
-		return f.failActive(
-			FailureRadioError,
-		)
+	if err := f.writeAll(out.Send, f.active.deadlineAt); err != nil {
+		return f.failSend(err)
 	}
 
 	return nil
@@ -362,27 +394,29 @@ func (f *finder) handleNotify(chunk []byte) (bool, error) {
 	}
 	msg, err := f.active.reasm.Add(chunk)
 	if err != nil {
-		f.write(wire.EncodeAbort(wire.AbortProtocolError))
+		f.sendControl(wire.EncodeAbort(wire.AbortProtocolError))
 		return false, f.failActive(failureReason(err))
 	}
 	if msg == nil {
 		return false, nil
 	}
 
+	// A failed session may still have an ABORT to send, best effort.
 	out, err := f.active.sess.Handle(msg)
-	sent := f.writeAll(out.Send)
 	if err != nil {
 		log.Debugf("Nearby payer session with %s failed: %v",
 			f.active.peer, err)
+		for _, msg := range out.Send {
+			f.sendControl(msg)
+		}
+
 		return false, f.failActive(failureReason(err))
 	}
 
 	// A reply that didn't reach the sharer leaves it waiting for us;
 	// give up on it now rather than at the session timeout.
-	if !sent {
-		return false, f.failActive(
-			FailureRadioError,
-		)
+	if err := f.writeAll(out.Send, f.active.deadlineAt); err != nil {
+		return false, f.failSend(err)
 	}
 	if out.PaymentRequest == "" {
 		return false, nil
@@ -405,7 +439,9 @@ func (f *finder) handleNotify(chunk []byte) (bool, error) {
 		log.Tracef("Nearby payment request from %s rejected: %v",
 			f.active.peer, err)
 		if reject, rErr := f.active.sess.Reject(); rErr == nil {
-			f.writeAll(reject.Send)
+			for _, msg := range reject.Send {
+				f.sendControl(msg)
+			}
 		}
 
 		return false, f.failActive(
@@ -417,7 +453,11 @@ func (f *finder) handleNotify(chunk []byte) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	f.writeAll(accept.Send)
+	err = f.writeAll(accept.Send, f.active.deadlineAt)
+	if err != nil {
+		log.Debugf("Acknowledgement to %s not sent: %v", f.active.peer,
+			err)
+	}
 
 	peer := f.active.peer
 	f.radio.disconnect(peer, f.active.connID)
@@ -493,37 +533,89 @@ func (f *finder) failActive(reason FailureReason) error {
 
 // writeAll sends messages to the active sharer and reports whether every
 // chunk went out.
-func (f *finder) writeAll(messages [][]byte) bool {
+func (f *finder) writeAll(messages [][]byte, until time.Time) error {
 	for _, msg := range messages {
-		if !f.write(msg) {
-			return false
+		if err := f.write(msg, until); err != nil {
+			return err
 		}
 	}
 
-	return true
+	return nil
 }
 
-// write chunks one message and writes it to the active sharer.
-func (f *finder) write(msg []byte) bool {
+// sendControl writes a one-chunk message to the active sharer outside the
+// session deadline, best effort: a sharer that misses it learns the outcome
+// from the disconnect that follows.
+func (f *finder) sendControl(msg []byte) {
+	err := f.write(msg, f.clock.Now().Add(controlSendTimeout))
+	if err != nil {
+		log.Debugf("Message to %s not sent: %v", f.active.peer, err)
+	}
+}
+
+// timeoutActive ends the active session whose deadline passed, telling the
+// sharer within abortSendTimeout, so an expired session is not stretched by
+// telling the sharer it expired.
+func (f *finder) timeoutActive() error {
+	if f.active != nil && f.active.connected {
+		err := f.write(
+			wire.EncodeAbort(wire.AbortTimeout),
+			f.clock.Now().Add(abortSendTimeout),
+		)
+		if err != nil {
+			log.Debugf("Abort to %s not sent: %v", f.active.peer,
+				err)
+		}
+	}
+
+	return f.failActive(FailureTimeout)
+}
+
+// failSend ends the active session after a write failed: a cancelled find
+// ends, a passed deadline is a timeout and anything else a radio error.
+func (f *finder) failSend(err error) error {
+	switch {
+	case f.ctx.Err() != nil:
+		return f.ctx.Err()
+
+	case errors.Is(err, errDeadline):
+		return f.timeoutActive()
+
+	default:
+		return f.failActive(FailureRadioError)
+	}
+}
+
+// write chunks one message and writes it to the active sharer. It stops
+// with errDeadline once until passed and with the context's error once the
+// find ended, checking both before every chunk, and never lets the native
+// stack block beyond until.
+func (f *finder) write(msg []byte, until time.Time) error {
 	if f.active == nil || !f.active.connected {
-		return false
+		return errNotConnected
 	}
 	chunks, err := wire.Chunk(msg, f.active.maxChunk)
 	if err != nil {
-		log.Debugf("Chunking for %s failed: %v", f.active.peer, err)
-		return false
+		return err
 	}
 	for _, c := range chunks {
+		if err := f.ctx.Err(); err != nil {
+			return err
+		}
+		remaining := until.Sub(f.clock.Now())
+		if remaining <= 0 {
+			return errDeadline
+		}
 		err := f.radio.write(
-			f.active.peer, f.active.connID, c, nativeOpTimeout,
+			f.owner, f.active.peer, f.active.connID, c, remaining,
 		)
 		if err != nil {
 			log.Debugf("Write to %s failed: %v", f.active.peer, err)
-			return false
+			return err
 		}
 	}
 
-	return true
+	return nil
 }
 
 // sendFailed reports one failed session.

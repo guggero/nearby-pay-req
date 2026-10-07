@@ -27,9 +27,15 @@ type centralConn struct {
 
 // payeeRun is the one session the payee serves at a time.
 type payeeRun struct {
-	central   string
-	sess      *session.PayeeSession
-	deadline  <-chan time.Time
+	central string
+	sess    *session.PayeeSession
+
+	// deadline fires at deadlineAt, when the session has to be over.
+	// Sending checks deadlineAt before every chunk, so a slow peer
+	// cannot stretch the session past it.
+	deadline   <-chan time.Time
+	deadlineAt time.Time
+
 	codeShown bool
 	lastCode  string
 	token     *[wire.ChosenTokenLen]byte
@@ -45,6 +51,14 @@ type deliveredSession struct {
 // sharer serves one payment request until its context ends. It runs on the
 // caller's goroutine; radio callbacks reach it through events.
 type sharer struct {
+	// ctx is the share's context, checked between the chunks of a
+	// message so a cancelled share stops sending at once.
+	ctx context.Context
+
+	// owner identifies the share's blocking radio calls (see
+	// radioMux.newOwner).
+	owner uint64
+
 	radio  *radioMux
 	tag    *hce.Tag
 	clock  clock.Clock
@@ -83,6 +97,7 @@ type sharer struct {
 
 // run shares until ctx ends or the stream breaks.
 func (s *sharer) run(ctx context.Context) error {
+	s.ctx = ctx
 	s.events = make(sink, s.params.EventQueueLen)
 	s.nfcReads = make(chan struct{}, 1)
 	s.conns = make(map[string]*centralConn)
@@ -113,6 +128,14 @@ func (s *sharer) run(ctx context.Context) error {
 	}
 	defer s.stopBLE()
 
+	// A notification blocked in the native stack when the share ends
+	// is cut short instead of running into its timeout.
+	s.owner = s.radio.newOwner()
+	stopInterrupt := context.AfterFunc(ctx, func() {
+		s.radio.interruptShare(s.owner)
+	})
+	defer stopInterrupt()
+
 	// The first refresh starts advertising if possible and always
 	// reports where the share stands.
 	if err := s.refreshBLE(true); err != nil {
@@ -120,6 +143,17 @@ func (s *sharer) run(ctx context.Context) error {
 	}
 
 	for {
+		// An expired session ends before anything else is handled,
+		// so a steady stream of events cannot keep it alive.
+		if s.active != nil &&
+			!s.clock.Now().Before(s.active.deadlineAt) {
+
+			if err := s.timeoutActive(); err != nil {
+				return err
+			}
+			continue
+		}
+
 		var deadline <-chan time.Time
 		if s.active != nil {
 			deadline = s.active.deadline
@@ -149,15 +183,17 @@ func (s *sharer) run(ctx context.Context) error {
 
 		// The active session took too long.
 		case <-deadline:
-			s.abortActive(wire.AbortTimeout)
-			err := s.failActive(
-				FailureTimeout,
-			)
-			if err != nil {
+			if err := s.timeoutActive(); err != nil {
 				return err
 			}
 		}
 	}
+}
+
+// timeoutActive ends the active session whose deadline passed.
+func (s *sharer) timeoutActive() error {
+	s.abortActive(wire.AbortTimeout)
+	return s.failActive(FailureTimeout)
 }
 
 // refreshBLE starts or stops advertising to match the current availability
@@ -301,7 +337,7 @@ func (s *sharer) handleWrite(central string, chunk []byte) error {
 
 	// Another payer is mid-session: turn this one away.
 	if s.active != nil && s.active.central != central {
-		s.notify(central, conn, wire.EncodeAbort(wire.AbortBusy))
+		s.sendControl(central, conn, wire.EncodeAbort(wire.AbortBusy))
 		s.radio.disconnectCentral(central)
 		delete(s.conns, central)
 		return nil
@@ -314,24 +350,42 @@ func (s *sharer) handleWrite(central string, chunk []byte) error {
 		}
 	}
 
+	// A failed session may still have an ABORT to send, best effort.
 	out, err := s.active.sess.Handle(msg)
-	if !s.notifyAll(central, conn, out.Send) {
-		s.active = nil
-		s.radio.disconnectCentral(central)
-		return s.sessionFailed(
-			FailureRadioError,
-			true,
-		)
-	}
 	if err != nil {
 		log.Debugf("Nearby payee session with %s failed: %v",
 			central, err)
+		for _, msg := range out.Send {
+			s.sendControl(central, conn, msg)
+		}
+
 		return s.failActive(failureReason(err))
+	}
+
+	// Once we know the code, the payer learns it from what we send
+	// next, so the session counts as having shown a code even if that
+	// send fails.
+	if out.Code != "" {
+		s.active.codeShown = true
+	}
+	err = s.notifyAll(central, conn, out.Send, s.active.deadlineAt)
+	switch {
+	case err == nil:
+
+	// The share ended mid-message.
+	case s.ctx.Err() != nil:
+		return s.ctx.Err()
+
+	// The payer took too long to take the chunks.
+	case errors.Is(err, errDeadline):
+		return s.timeoutActive()
+
+	default:
+		return s.failActive(FailureRadioError)
 	}
 
 	// The payer has our code once it has sent its nonce.
 	if out.Code != "" {
-		s.active.codeShown = true
 		log.Debugf("Nearby payee code shown for %s", central)
 		log.Tracef("Nearby payee code %s for %s", out.Code, central)
 		if err := s.send(PeerConnected{Code: out.Code}); err != nil {
@@ -375,7 +429,7 @@ func (s *sharer) handleChosen(central string, conn *centralConn,
 	s.pruneDelivered()
 	token, err := wire.DecodeChosen(msg.Body)
 	if err != nil || msg.Version != wire.Version1 {
-		s.notify(central, conn, wire.EncodeAbort(
+		s.sendControl(central, conn, wire.EncodeAbort(
 			wire.AbortProtocolError,
 		))
 		return nil
@@ -383,13 +437,13 @@ func (s *sharer) handleChosen(central string, conn *centralConn,
 	ds, ok := s.delivered[token]
 	if !ok {
 		log.Debugf("Unknown chosen token from %s", central)
-		s.notify(central, conn, wire.EncodeAbort(
+		s.sendControl(central, conn, wire.EncodeAbort(
 			wire.AbortUnknownSession,
 		))
 		return nil
 	}
 	delete(s.delivered, token)
-	s.notify(central, conn, wire.EncodeChosenAck())
+	s.sendControl(central, conn, wire.EncodeChosenAck())
 
 	if err := s.send(Chosen{Code: ds.code}); err != nil {
 		return err
@@ -427,7 +481,7 @@ func (s *sharer) startSession(central string, conn *centralConn) (bool, error) {
 			s.params.MinSessionInterval
 	if limited {
 		log.Debugf("Rate limiting nearby session from %s", central)
-		s.notify(central, conn, wire.EncodeAbort(wire.AbortBusy))
+		s.sendControl(central, conn, wire.EncodeAbort(wire.AbortBusy))
 		s.radio.disconnectCentral(central)
 		delete(s.conns, central)
 
@@ -443,9 +497,10 @@ func (s *sharer) startSession(central string, conn *centralConn) (bool, error) {
 	}
 	s.sessionStarts = append(s.sessionStarts, now)
 	s.active = &payeeRun{
-		central:  central,
-		sess:     sess,
-		deadline: s.clock.TickAfter(s.params.SessionTimeout),
+		central:    central,
+		sess:       sess,
+		deadline:   s.clock.TickAfter(s.params.SessionTimeout),
+		deadlineAt: now.Add(s.params.SessionTimeout),
 	}
 
 	return true, nil
@@ -455,7 +510,7 @@ func (s *sharer) startSession(central string, conn *centralConn) (bool, error) {
 func (s *sharer) dropCentral(central string, err error) error {
 	log.Debugf("Dropping nearby central %s: %v", central, err)
 	if conn, ok := s.conns[central]; ok {
-		s.notify(central, conn, wire.EncodeAbort(
+		s.sendControl(central, conn, wire.EncodeAbort(
 			wire.AbortProtocolError,
 		))
 	}
@@ -474,13 +529,24 @@ func (s *sharer) dropCentral(central string, err error) error {
 	)
 }
 
-// abortActive tells the active payer the session ends, best effort.
+// abortActive tells the active payer the session ends, best effort and
+// within abortSendTimeout, so an expired session is not stretched by
+// telling the payer it expired.
 func (s *sharer) abortActive(reason wire.AbortReason) {
 	if s.active == nil {
 		return
 	}
-	if conn, ok := s.conns[s.active.central]; ok {
-		s.notify(s.active.central, conn, wire.EncodeAbort(reason))
+	conn, ok := s.conns[s.active.central]
+	if !ok {
+		return
+	}
+	err := s.notify(
+		s.active.central, conn, wire.EncodeAbort(reason),
+		s.clock.Now().Add(abortSendTimeout),
+	)
+	if err != nil {
+		log.Debugf("Abort to central %s not sent: %v",
+			s.active.central, err)
 	}
 }
 
@@ -528,37 +594,59 @@ func (s *sharer) sessionFailed(reason FailureReason,
 	})
 }
 
-// notifyAll sends messages to a payer and reports whether every chunk went
-// out.
+// notifyAll sends messages to a payer, every chunk before until.
 func (s *sharer) notifyAll(central string, conn *centralConn,
-	messages [][]byte) bool {
+	messages [][]byte, until time.Time) error {
 
 	for _, msg := range messages {
-		if !s.notify(central, conn, msg) {
-			return false
+		if err := s.notify(central, conn, msg, until); err != nil {
+			return err
 		}
 	}
 
-	return true
+	return nil
 }
 
-// notify chunks one message and sends it to a payer.
-func (s *sharer) notify(central string, conn *centralConn, msg []byte) bool {
+// sendControl sends a one-chunk message outside any session deadline, best
+// effort: a payer that misses it learns the outcome from the disconnect
+// that follows.
+func (s *sharer) sendControl(central string, conn *centralConn, msg []byte) {
+	err := s.notify(
+		central, conn, msg, s.clock.Now().Add(controlSendTimeout),
+	)
+	if err != nil {
+		log.Debugf("Message to central %s not sent: %v", central, err)
+	}
+}
+
+// notify chunks one message and sends it to a payer. It stops with
+// errDeadline once until passed and with the context's error once the share
+// ended, checking both before every chunk, and never lets the native stack
+// block beyond until.
+func (s *sharer) notify(central string, conn *centralConn, msg []byte,
+	until time.Time) error {
+
 	chunks, err := wire.Chunk(msg, conn.maxChunk)
 	if err != nil {
-		log.Debugf("Chunking for central %s failed: %v", central, err)
-		return false
+		return err
 	}
 	for _, c := range chunks {
-		err := s.radio.notify(central, c, nativeOpTimeout)
+		if err := s.ctx.Err(); err != nil {
+			return err
+		}
+		remaining := until.Sub(s.clock.Now())
+		if remaining <= 0 {
+			return errDeadline
+		}
+		err := s.radio.notify(s.owner, central, c, remaining)
 		if err != nil {
 			log.Debugf("Notify to central %s failed: %v", central,
 				err)
-			return false
+			return err
 		}
 	}
 
-	return true
+	return nil
 }
 
 // sendStarted reports which transports are live.

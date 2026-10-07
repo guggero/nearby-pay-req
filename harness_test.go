@@ -49,6 +49,18 @@ func newNodeWithParams(t *testing.T, world *nearbytest.World, id string,
 
 	t.Helper()
 
+	return newNodeWithRadio(t, world, id, params, nil)
+}
+
+// newNodeWithRadio adds a phone with the given parameters to world, whose
+// Manager drives the radio wrap returns for the phone's fake radio and its
+// clock. A nil wrap drives the fake directly.
+func newNodeWithRadio(t *testing.T, world *nearbytest.World, id string,
+	params Params, wrap func(*nearbytest.Radio,
+		*clock.TestClock) radio.Radio) *node {
+
+	t.Helper()
+
 	// A large buffer keeps TickAfter from blocking when a test isn't
 	// waiting for the tick.
 	ticks := make(chan time.Duration, 1024)
@@ -56,7 +68,11 @@ func newNodeWithParams(t *testing.T, world *nearbytest.World, id string,
 		time.Unix(1_700_000_000, 0), ticks,
 	)
 	fake := world.NewRadio(id)
-	mgr := New(Config{Radio: fake, Clock: clk, Params: params})
+	var native radio.Radio = fake
+	if wrap != nil {
+		native = wrap(fake, clk)
+	}
+	mgr := New(Config{Radio: native, Clock: clk, Params: params})
 	t.Cleanup(mgr.Stop)
 
 	return &node{
