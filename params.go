@@ -26,6 +26,8 @@ const (
 	defaultEventQueueLen        = 256
 	defaultFirstMessageTimeout  = 3 * time.Second
 	defaultMaxCentrals          = 8
+	defaultCandidateTTL         = 5 * time.Second
+	defaultMaxPeersPerFind      = 64
 )
 
 // Params are the timing, selection and rate-limiting knobs of the Manager.
@@ -128,6 +130,15 @@ type Params struct {
 	// message of up to 12288 bytes; payers beyond the cap are dropped as
 	// they subscribe.
 	MaxCentrals int
+
+	// CandidateTTL is how long a sharer stays a candidate after its
+	// last sighting.
+	CandidateTTL time.Duration
+
+	// MaxPeersPerFind caps how many sharers one find tracks. Once it
+	// tracks that many, sharers it has not seen before are ignored for
+	// the rest of the find.
+	MaxPeersPerFind int
 }
 
 // DefaultParams returns the parameters the Manager uses unless told
@@ -154,6 +165,8 @@ func DefaultParams() Params {
 		EventQueueLen:        defaultEventQueueLen,
 		FirstMessageTimeout:  defaultFirstMessageTimeout,
 		MaxCentrals:          defaultMaxCentrals,
+		CandidateTTL:         defaultCandidateTTL,
+		MaxPeersPerFind:      defaultMaxPeersPerFind,
 	}
 }
 
@@ -185,12 +198,14 @@ func (p Params) withDefaults() Params {
 	duration(&p.ChooseRetryDelay, d.ChooseRetryDelay)
 	duration(&p.ScanStopDebounce, d.ScanStopDebounce)
 	duration(&p.FirstMessageTimeout, d.FirstMessageTimeout)
+	duration(&p.CandidateTTL, d.CandidateTTL)
 	count(&p.MaxSessionsPerWindow, d.MaxSessionsPerWindow)
 	count(&p.SuspiciousThreshold, d.SuspiciousThreshold)
 	count(&p.MaxBusyRetries, d.MaxBusyRetries)
 	count(&p.ChooseAttempts, d.ChooseAttempts)
 	count(&p.EventQueueLen, d.EventQueueLen)
 	count(&p.MaxCentrals, d.MaxCentrals)
+	count(&p.MaxPeersPerFind, d.MaxPeersPerFind)
 
 	// RSSI is negative by nature, so only the unset zero means the
 	// default.

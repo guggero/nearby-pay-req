@@ -13,6 +13,13 @@ import (
 	"github.com/lightningnetwork/lnd/clock"
 )
 
+const (
+	// maxDeliveredSessions caps the delivered sessions a payee remembers
+	// for a later CHOSEN. The session rate limit keeps the count far
+	// lower within ChosenRetention anyway; this is the hard bound.
+	maxDeliveredSessions = 32
+)
+
 var (
 	// errChosen ends a share whose request a payer chose, unless the share
 	// was told to continue.
@@ -208,15 +215,20 @@ func (s *sharer) run(ctx context.Context) error {
 }
 
 // schedule arms wake for the earliest housekeeping deadline: a payer that
-// has yet to send its first complete message.
+// has yet to send its first complete message, or a delivered session whose
+// token expires.
 func (s *sharer) schedule() {
 	var next time.Time
-	for _, conn := range s.conns {
-		if !conn.firstBy.IsZero() &&
-			(next.IsZero() || conn.firstBy.Before(next)) {
-
-			next = conn.firstBy
+	earliest := func(t time.Time) {
+		if !t.IsZero() && (next.IsZero() || t.Before(next)) {
+			next = t
 		}
+	}
+	for _, conn := range s.conns {
+		earliest(conn.firstBy)
+	}
+	for _, d := range s.delivered {
+		earliest(d.at.Add(s.params.ChosenRetention))
 	}
 
 	if next.Equal(s.wakeAt) {
@@ -230,9 +242,12 @@ func (s *sharer) schedule() {
 	s.wake = s.clock.TickAfter(next.Sub(s.clock.Now()))
 }
 
-// housekeep drops every payer that let its first-message deadline pass.
-// Whatever it sends later is ignored: the payee no longer knows it.
+// housekeep drops every payer that let its first-message deadline pass,
+// whatever it sends later being ignored, and forgets expired tokens, so they
+// are gone by their deadline rather than whenever the next CHOSEN arrives.
 func (s *sharer) housekeep() {
+	s.pruneDelivered()
+
 	now := s.clock.Now()
 	for central, conn := range s.conns {
 		if conn.firstBy.IsZero() || now.Before(conn.firstBy) {
@@ -478,10 +493,7 @@ func (s *sharer) handleWrite(central string, chunk []byte) error {
 		delete(s.conns, central)
 
 		if token != nil {
-			s.delivered[*token] = deliveredSession{
-				code: code,
-				at:   s.clock.Now(),
-			}
+			s.rememberDelivered(*token, code)
 		}
 
 		return s.send(Delivered{Code: code})
@@ -529,6 +541,29 @@ func (s *sharer) handleChosen(central string, conn *centralConn,
 	}
 
 	return errChosen
+}
+
+// rememberDelivered keeps a delivered session's token for a later CHOSEN.
+// Expired tokens go first, and the oldest one makes room once
+// maxDeliveredSessions are kept, so the map stays bounded however long the
+// share runs without a CHOSEN.
+func (s *sharer) rememberDelivered(token [wire.ChosenTokenLen]byte,
+	code string) {
+
+	s.pruneDelivered()
+	if len(s.delivered) >= maxDeliveredSessions {
+		var (
+			oldest   [wire.ChosenTokenLen]byte
+			oldestAt time.Time
+		)
+		for t, d := range s.delivered {
+			if oldestAt.IsZero() || d.at.Before(oldestAt) {
+				oldest, oldestAt = t, d.at
+			}
+		}
+		delete(s.delivered, oldest)
+	}
+	s.delivered[token] = deliveredSession{code: code, at: s.clock.Now()}
 }
 
 // pruneDelivered forgets delivered sessions older than ChosenRetention.

@@ -22,7 +22,8 @@ var (
 
 // candidate is one sharer seen while scanning.
 type candidate struct {
-	rssi float64
+	rssi     float64
+	lastSeen time.Time
 }
 
 // payerRun is the one session the payer runs at a time.
@@ -71,14 +72,20 @@ type finder struct {
 	lastAvailability Availability
 	scanning         bool
 	candidates       map[string]*candidate
-	failed           map[string]bool
-	received         map[string]bool
-	busyRetries      map[string]int
-	retryAt          map[string]time.Time
-	window           <-chan time.Time
-	giveUp           <-chan time.Time
-	tooFarSent       bool
-	active           *payerRun
+
+	// known holds every sharer this find tracks anything about. It is
+	// capped at MaxPeersPerFind, which bounds candidates and every
+	// per-sharer map below whatever number of identities sharers in
+	// range present.
+	known       map[string]struct{}
+	failed      map[string]bool
+	received    map[string]bool
+	busyRetries map[string]int
+	retryAt     map[string]time.Time
+	window      <-chan time.Time
+	giveUp      <-chan time.Time
+	tooFarSent  bool
+	active      *payerRun
 }
 
 // run searches until a payment request was received (nil), ctx ends, the
@@ -87,6 +94,7 @@ func (f *finder) run(ctx context.Context) error {
 	f.ctx = ctx
 	f.events = make(sink, f.params.EventQueueLen)
 	f.candidates = make(map[string]*candidate)
+	f.known = make(map[string]struct{})
 	f.failed = make(map[string]bool)
 	f.received = make(map[string]bool)
 	f.busyRetries = make(map[string]int)
@@ -232,7 +240,7 @@ func (f *finder) handleEvent(ev event) (bool, error) {
 	// A sighting: update the peer's smoothed RSSI and open the
 	// collection window on the first one.
 	case evAdvertisement:
-		if !f.eligible(ev.id) {
+		if !f.eligible(ev.id) || !f.track(ev.id) {
 			return false, nil
 		}
 		c, ok := f.candidates[ev.id]
@@ -243,6 +251,7 @@ func (f *finder) handleEvent(ev event) (bool, error) {
 			c.rssi += f.params.RSSISmoothing *
 				(float64(ev.rssi) - c.rssi)
 		}
+		c.lastSeen = f.clock.Now()
 		if f.window == nil && f.active == nil {
 			f.window = f.clock.TickAfter(f.params.CollectWindow)
 		}
@@ -304,7 +313,25 @@ func (f *finder) ownConnection(ev event) bool {
 		f.active.connID == ev.connID
 }
 
+// track starts tracking a sharer, or reports false once the find tracks
+// MaxPeersPerFind sharers already. Beyond that the find admits no new
+// sharer: forgetting an old one instead could let a sharer that failed, or
+// was excluded for a mismatch, come back under the code-attempt budget.
+func (f *finder) track(peer string) bool {
+	if _, ok := f.known[peer]; ok {
+		return true
+	}
+	if len(f.known) >= f.params.MaxPeersPerFind {
+		return false
+	}
+	f.known[peer] = struct{}{}
+
+	return true
+}
+
 // pick connects to the strongest sharer, or reports that all are too far.
+// A sharer not seen for CandidateTTL is no candidate any more: it left, or
+// its RSSI average is too old to compare.
 func (f *finder) pick() error {
 	if f.active != nil {
 		return nil
@@ -313,8 +340,13 @@ func (f *finder) pick() error {
 	var (
 		best   string
 		bestDB float64
+		now    = f.clock.Now()
 	)
 	for id, c := range f.candidates {
+		if now.Sub(c.lastSeen) > f.params.CandidateTTL {
+			delete(f.candidates, id)
+			continue
+		}
 		if best == "" || c.rssi > bestDB {
 			best, bestDB = id, c.rssi
 		}
