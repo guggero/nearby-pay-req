@@ -231,7 +231,11 @@ type Connecting struct{}
 
 // Received is the end of a successful find: the payment request, which the
 // FindOptions.Validate hook accepted, and the code the payer's user compares
-// with the payee's screen.
+// with the payee's screen. It is only emitted once the radio took the
+// acknowledgement; a find whose acknowledgement could not be sent fails
+// that session instead. The radio taking it does not prove the payee
+// processed it: a payee that lost the link at that instant reports no
+// Delivered and later answers Choose with ErrUnknownSession.
 type Received struct {
 	// PaymentRequest is the shared string, exactly as the payee's QR
 	// code would carry it.

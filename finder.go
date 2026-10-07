@@ -481,14 +481,18 @@ func (f *finder) handleNotify(chunk []byte) (bool, error) {
 		)
 	}
 
+	// Without the acknowledgement the sharer never counts the request
+	// as delivered and keeps no token for a later Choose, so a request
+	// whose acknowledgement did not go out is not handed on either: the
+	// session fails like any other whose write failed.
 	accept, err := f.active.sess.Accept()
 	if err != nil {
 		return false, err
 	}
-	err = f.writeAll(accept.Send, f.active.deadlineAt)
-	if err != nil {
+	if err := f.writeAll(accept.Send, f.active.deadlineAt); err != nil {
 		log.Debugf("Acknowledgement to %s not sent: %v", f.active.peer,
 			err)
+		return false, f.failSend(err)
 	}
 
 	peer := f.active.peer

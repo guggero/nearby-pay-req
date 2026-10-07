@@ -698,3 +698,33 @@ func TestScanFailureRestartsScan(t *testing.T) {
 	starts, _ = payer.radio.ScanCalls()
 	require.Equal(t, 2, starts)
 }
+
+// TestAckWriteFailure checks that a payer whose acknowledgement could not
+// be written fails the session instead of handing on a request the payee
+// never counts as delivered, and that the payee keeps no token for it.
+func TestAckWriteFailure(t *testing.T) {
+	t.Parallel()
+
+	world := nearbytest.NewWorld()
+	payee := newNode(t, world, "payee")
+	payer := newNode(t, world, "payer")
+
+	share := payee.share(t, testRequest, false)
+	expectStarted(t, share, true, false)
+
+	// The opening message and the nonce go out, each one chunk; the
+	// acknowledgement does not.
+	payer.radio.FailWritesAfter(2)
+	find := startFind(t, world, payer)
+	nextAs[Connecting](t, find)
+	require.Equal(
+		t, FailureRadioError, nextAs[SessionFailed](t, find).Reason,
+	)
+
+	// The payee showed its code, then lost the payer without an
+	// acknowledgement.
+	nextAs[PeerConnected](t, share)
+	require.Equal(
+		t, FailureConnectFailed, nextAs[SessionFailed](t, share).Reason,
+	)
+}
