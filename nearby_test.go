@@ -658,3 +658,43 @@ func TestScanRestartsAfterBluetoothOff(t *testing.T) {
 	require.Equal(t, 2, starts)
 	require.Equal(t, 1, stops)
 }
+
+// TestScanFailureRestartsScan checks that a find started right after a scan
+// failure starts a new native scan instead of reusing the dead one within
+// the stop debounce, and that a failure reported late by the dead scan
+// cannot end the find that replaced it.
+func TestScanFailureRestartsScan(t *testing.T) {
+	t.Parallel()
+
+	world := nearbytest.NewWorld()
+	payee := newNode(t, world, "payee")
+	payer := newNode(t, world, "payer")
+	expectStarted(t, payee.share(t, testRequest, false), true, false)
+
+	first := payer.find(t)
+	nextAs[Scanning](t, first)
+	payer.radio.FailScan("stack error")
+	require.Equal(
+		t, FailureRadioError, nextAs[SessionFailed](t, first).Reason,
+	)
+	require.ErrorIs(t, first.end(t), ErrScanFailed)
+
+	// Within the debounce: a fresh native scan.
+	second := startFind(t, world, payer)
+	starts, _ := payer.radio.ScanCalls()
+	require.Equal(t, 2, starts)
+
+	// The first scan reports its failure once more, late. The find on
+	// the second scan does not notice and delivers.
+	stale := &centralCallback{r: payer.mgr.radio, scanGen: 1}
+	stale.OnScanFailed("late")
+	nextAs[Connecting](t, second)
+	nextAs[Received](t, second)
+	require.NoError(t, second.end(t))
+
+	// A healthy scan is still reused by a quick restart.
+	third := payer.find(t)
+	nextAs[Scanning](t, third)
+	starts, _ = payer.radio.ScanCalls()
+	require.Equal(t, 2, starts)
+}

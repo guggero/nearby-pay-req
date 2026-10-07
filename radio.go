@@ -43,6 +43,10 @@ type event struct {
 	rssi     int
 	maxChunk int
 
+	// scanGen is the native scan an advertisement or scan failure came
+	// from (see radioMux.scanGen).
+	scanGen uint64
+
 	// reason is the native failure description, for logs only.
 	reason string
 }
@@ -82,6 +86,12 @@ type radioMux struct {
 	// pending debounced stop when a new scan starts.
 	scanning bool
 	stopGen  uint64
+
+	// scanGen numbers native scans. Each native StartScan gets a
+	// callback carrying the next number, so an advertisement or failure
+	// a scan reports after it was stopped or replaced is told apart
+	// from one of the scan running now and dropped.
+	scanGen uint64
 
 	*fn.ContextGuard
 }
@@ -140,13 +150,19 @@ func (r *radioMux) startScan(s sink) error {
 	r.findSink = s
 	r.stopGen++
 	scanning := r.scanning
+	if !scanning {
+		r.scanGen++
+	}
+	gen := r.scanGen
 	r.mu.Unlock()
 
 	if scanning {
 		return nil
 	}
 
-	err := r.native.StartScan(ServiceUUID, &centralCallback{r: r})
+	err := r.native.StartScan(
+		ServiceUUID, &centralCallback{r: r, scanGen: gen},
+	)
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -169,9 +185,30 @@ func (r *radioMux) scanLost() {
 	r.stopGen++
 	scanning := r.scanning
 	r.scanning = false
+	r.scanGen++
 	r.mu.Unlock()
 
 	if scanning {
+		r.native.StopScan()
+	}
+}
+
+// scanFailed records that the native scan numbered gen failed, so the next
+// startScan starts a fresh scan instead of reusing the dead one, whose
+// debounced stop would otherwise keep it marked as running. Unlike scanLost
+// it keeps the subscription: a Choose that saw the failure still waits for
+// its connection's events. A failure of an older scan changes nothing.
+func (r *radioMux) scanFailed(gen uint64) {
+	r.mu.Lock()
+	current := r.scanning && gen == r.scanGen
+	if current {
+		r.stopGen++
+		r.scanning = false
+		r.scanGen++
+	}
+	r.mu.Unlock()
+
+	if current {
 		r.native.StopScan()
 	}
 }
@@ -206,6 +243,7 @@ func (r *radioMux) stopScan() {
 		}
 		r.native.StopScan()
 		r.scanning = false
+		r.scanGen++
 	}()
 }
 
@@ -217,6 +255,7 @@ func (r *radioMux) stop() {
 	r.mu.Lock()
 	scanning := r.scanning
 	r.scanning = false
+	r.scanGen++
 	r.shareSink, r.findSink = nil, nil
 	r.mu.Unlock()
 
@@ -241,6 +280,21 @@ func (r *radioMux) dispatchShare(ev event) {
 func (r *radioMux) dispatchFind(ev event) {
 	r.mu.Lock()
 	s := r.findSink
+	r.mu.Unlock()
+
+	if s != nil {
+		s.push(ev)
+	}
+}
+
+// dispatchScan routes an advertisement or scan failure to the current find,
+// unless it came from a native scan that no longer runs.
+func (r *radioMux) dispatchScan(ev event) {
+	r.mu.Lock()
+	s := r.findSink
+	if ev.scanGen != r.scanGen {
+		s = nil
+	}
 	r.mu.Unlock()
 
 	if s != nil {
@@ -282,14 +336,21 @@ func (c *peripheralCallback) OnAdvertisingFailed(reason string) {
 	c.r.dispatchShare(event{kind: evAdvertisingFailed, reason: reason})
 }
 
-// centralCallback receives the native payer-side callbacks.
+// centralCallback receives the native payer-side callbacks of one native
+// scan.
 type centralCallback struct {
-	r *radioMux
+	r       *radioMux
+	scanGen uint64
 }
 
 // OnAdvertisement implements radio.CentralCallback.
 func (c *centralCallback) OnAdvertisement(peerID string, rssi int) {
-	c.r.dispatchFind(event{kind: evAdvertisement, id: peerID, rssi: rssi})
+	c.r.dispatchScan(event{
+		kind:    evAdvertisement,
+		id:      peerID,
+		rssi:    rssi,
+		scanGen: c.scanGen,
+	})
 }
 
 // OnConnected implements radio.CentralCallback.
@@ -321,7 +382,11 @@ func (c *centralCallback) OnDisconnected(peerID string, reason string) {
 
 // OnScanFailed implements radio.CentralCallback.
 func (c *centralCallback) OnScanFailed(reason string) {
-	c.r.dispatchFind(event{kind: evScanFailed, reason: reason})
+	c.r.dispatchScan(event{
+		kind:    evScanFailed,
+		reason:  reason,
+		scanGen: c.scanGen,
+	})
 }
 
 var (

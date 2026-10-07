@@ -246,9 +246,11 @@ func (f *finder) handleEvent(ev event) (bool, error) {
 			FailureConnectFailed,
 		)
 
-	// The OS stopped our scan; the client restarts the find.
+	// The OS stopped our scan; the client restarts the find. The dead
+	// scan must not be reused by that next find.
 	case evScanFailed:
 		log.Warnf("Nearby scan failed: %s", ev.reason)
+		f.radio.scanFailed(ev.scanGen)
 		err := f.sendFailed(
 			FailureRadioError,
 		)

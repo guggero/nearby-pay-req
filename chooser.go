@@ -135,6 +135,12 @@ func (c *chooser) attempt(ctx context.Context) error {
 			return errChooseTimeout
 
 		case ev := <-c.events:
+			// The scan only keeps us subscribed, but a dead one
+			// must not be reused by the next find.
+			if ev.kind == evScanFailed {
+				c.radio.scanFailed(ev.scanGen)
+				continue
+			}
 			if ev.id != c.peer {
 				continue
 			}

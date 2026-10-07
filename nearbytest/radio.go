@@ -213,6 +213,14 @@ func (r *Radio) writeFails() bool {
 	}
 }
 
+// FailScan makes the running scan report that it failed, as Android does
+// when the stack refuses or ends a scan.
+func (r *Radio) FailScan(reason string) {
+	if cb := r.scanCallback(); cb != nil {
+		cb.OnScanFailed(reason)
+	}
+}
+
 // HceActive reports the last SetHceActive value.
 func (r *Radio) HceActive() bool {
 	r.mu.Lock()
