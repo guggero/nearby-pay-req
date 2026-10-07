@@ -155,7 +155,8 @@ type ShareEvent interface {
 }
 
 // FindEvent is one event of a running find. It is one of Scanning,
-// AvailabilityChanged, TooFar, Connecting, SessionFailed or Received.
+// AvailabilityChanged, TooFar, Connecting, SessionFailed, Received or
+// OfferExpired.
 type FindEvent interface {
 	findEvent()
 }
@@ -278,6 +279,22 @@ type Received struct {
 	// PeerID to Manager.Choose so the payee stops sharing. It is opaque
 	// and only meaningful to that payee, for Params.ChosenRetention.
 	ChosenToken []byte
+
+	// ExpiresAt ends the comparison: the payee holds Code on screen
+	// until then (see Params.ComparisonTimeout). After it, the wallet
+	// must no longer let its user confirm this request, and should
+	// search again instead: every code the user may still confirm is a
+	// code an attacker may try to make a payee show.
+	ExpiresAt time.Time
+}
+
+// OfferExpired reports, during a find with FindOptions.Collect, that the
+// Received from PeerID with Code reached its ExpiresAt. The wallet must drop
+// that request from what its user can pick. The find may visit the sharer
+// again, for a fresh request and code.
+type OfferExpired struct {
+	PeerID string
+	Code   string
 }
 
 func (ShareStarted) shareEvent()        {}
@@ -296,3 +313,4 @@ func (Scanning) findEvent()             {}
 func (TooFar) findEvent()               {}
 func (Connecting) findEvent()           {}
 func (Received) findEvent()             {}
+func (OfferExpired) findEvent()         {}

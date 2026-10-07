@@ -20,6 +20,12 @@ var (
 	errNotConnected = errors.New("not connected")
 )
 
+// receivedOffer is a request a collecting find received, until it expires.
+type receivedOffer struct {
+	code      string
+	expiresAt time.Time
+}
+
 // candidate is one sharer seen while scanning.
 type candidate struct {
 	rssi     float64
@@ -77,9 +83,22 @@ type finder struct {
 	// capped at MaxPeersPerFind, which bounds candidates and every
 	// per-sharer map below whatever number of identities sharers in
 	// range present.
-	known       map[string]struct{}
-	failed      map[string]bool
-	received    map[string]bool
+	known  map[string]struct{}
+	failed map[string]bool
+
+	// received maps every sharer a collecting find received a request
+	// from to when that offer expires. Until then the find does not
+	// revisit the sharer; afterwards it reports OfferExpired and may.
+	received map[string]receivedOffer
+
+	// offers is the Manager's budget of offers, shared by every find.
+	offers *offerBudget
+
+	// expire fires at expireAt, when the earliest received offer
+	// expires.
+	expire   <-chan time.Time
+	expireAt time.Time
+
 	busyRetries map[string]int
 	retryAt     map[string]time.Time
 	window      <-chan time.Time
@@ -96,7 +115,7 @@ func (f *finder) run(ctx context.Context) error {
 	f.candidates = make(map[string]*candidate)
 	f.known = make(map[string]struct{})
 	f.failed = make(map[string]bool)
-	f.received = make(map[string]bool)
+	f.received = make(map[string]receivedOffer)
 	f.busyRetries = make(map[string]int)
 	f.retryAt = make(map[string]time.Time)
 	defer f.stopScan(false)
@@ -129,10 +148,18 @@ func (f *finder) run(ctx context.Context) error {
 		if f.active != nil {
 			deadline = f.active.deadline
 		}
+		f.scheduleExpiry()
 
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+
+		// A received offer expired.
+		case <-f.expire:
+			f.expire, f.expireAt = nil, time.Time{}
+			if err := f.expireOffers(); err != nil {
+				return err
+			}
 
 		// A radio callback; done reports a received request.
 		case ev := <-f.events:
@@ -141,9 +168,14 @@ func (f *finder) run(ctx context.Context) error {
 				return err
 			}
 
-		// The collection window closed: pick a sharer.
+		// The collection window closed: pick a sharer, counting the
+		// sightings already queued, which belong to that window.
 		case <-f.window:
 			f.window = nil
+			done, err := f.drainEvents()
+			if err != nil || done {
+				return err
+			}
 			if err := f.pick(); err != nil {
 				return err
 			}
@@ -305,6 +337,20 @@ func (f *finder) handleEvent(ev event) (bool, error) {
 	}
 }
 
+// drainEvents handles the radio events queued right now, and no more, so a
+// flood of new ones cannot keep the find from moving on. It reports true
+// once a payment request was received and delivered to the client.
+func (f *finder) drainEvents() (bool, error) {
+	for range len(f.events) {
+		done, err := f.handleEvent(<-f.events)
+		if err != nil || done {
+			return done, err
+		}
+	}
+
+	return false, nil
+}
+
 // ownConnection reports whether a connection event belongs to the active
 // session's connection, rather than to an earlier connection to the same
 // sharer whose callbacks arrive late.
@@ -357,6 +403,14 @@ func (f *finder) pick() error {
 
 	// Keep re-evaluating while sharers are visible but too far away;
 	// someone walking up should be picked without restarting.
+	// The payer holds as many offers as it may: connect once the
+	// oldest one expired.
+	if free := f.offers.nextFree(now); free.After(now) {
+		log.Debugf("Nearby offer budget used up until %v", free)
+		f.window = f.clock.TickAfter(free.Sub(now))
+		return nil
+	}
+
 	if bestDB < float64(f.params.RSSIFloor) {
 		f.window = f.clock.TickAfter(f.params.CollectWindow)
 		if f.tooFarSent {
@@ -503,19 +557,24 @@ func (f *finder) handleNotify(chunk []byte) (bool, error) {
 	if out.ChosenToken != nil {
 		token = out.ChosenToken[:]
 	}
+	now := f.clock.Now()
+	f.offers.take(now)
+	expiresAt := now.Add(f.params.ComparisonTimeout)
 	err = f.send(Received{
 		PaymentRequest: out.PaymentRequest,
 		Code:           out.Code,
 		PeerID:         peer,
 		ChosenToken:    token,
+		ExpiresAt:      expiresAt,
 	})
 	if err != nil || !f.collect {
 		return err == nil, err
 	}
 
-	// Collecting: this sharer is done, the others still get their
-	// turn, and the find no longer counts as fruitless.
-	f.received[peer] = true
+	// Collecting: this sharer is done until its offer expires, the
+	// others still get their turn, and the find no longer counts as
+	// fruitless.
+	f.received[peer] = receivedOffer{code: out.Code, expiresAt: expiresAt}
 	delete(f.candidates, peer)
 	f.giveUp = nil
 	if len(f.candidates) > 0 {
@@ -525,13 +584,50 @@ func (f *finder) handleNotify(chunk []byte) (bool, error) {
 	return false, nil
 }
 
+// scheduleExpiry arms expire for the earliest received offer to expire.
+func (f *finder) scheduleExpiry() {
+	var next time.Time
+	for _, offer := range f.received {
+		if next.IsZero() || offer.expiresAt.Before(next) {
+			next = offer.expiresAt
+		}
+	}
+	if next.Equal(f.expireAt) {
+		return
+	}
+	f.expireAt = next
+	if next.IsZero() {
+		f.expire = nil
+		return
+	}
+	f.expire = f.clock.TickAfter(next.Sub(f.clock.Now()))
+}
+
+// expireOffers reports every received offer whose comparison time is over:
+// the user must no longer confirm it, as its payee may show another code by
+// now. The find may visit that sharer again for a fresh request and code.
+func (f *finder) expireOffers() error {
+	now := f.clock.Now()
+	for peer, offer := range f.received {
+		if now.Before(offer.expiresAt) {
+			continue
+		}
+		delete(f.received, peer)
+		err := f.send(OfferExpired{PeerID: peer, Code: offer.code})
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // eligible reports whether a sighted sharer may become a candidate: not
 // excluded by the caller, not failed or already received from in this find,
 // and not waiting out a busy retry delay.
 func (f *finder) eligible(peer string) bool {
-	if !f.scanning || f.exclude[peer] || f.failed[peer] ||
-		f.received[peer] {
-
+	_, received := f.received[peer]
+	if !f.scanning || f.exclude[peer] || f.failed[peer] || received {
 		return false
 	}
 

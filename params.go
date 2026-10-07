@@ -22,6 +22,7 @@ const (
 	defaultComparisonTimeout        = 20 * time.Second
 	defaultMaxCodeAttemptsPerWindow = 6
 	defaultMaxCodeAttempts          = 50
+	defaultMaxOffers                = 4
 	defaultChosenRetention          = 2 * time.Minute
 	defaultChooseAttempts           = 3
 	defaultChooseRetryDelay         = time.Second
@@ -89,6 +90,14 @@ type Params struct {
 	// need more than a few, since every delivered code is held for
 	// ComparisonTimeout.
 	MaxCodeAttemptsPerWindow int
+
+	// MaxOffers caps the requests a payer may receive within one
+	// ComparisonTimeout, across all of its finds; beyond it a find waits
+	// for the oldest to expire before connecting again. Every request
+	// the user may still confirm is a code an attacker may try to make
+	// the genuine payee show, so this, not the number of sharers in
+	// range, multiplies an attacker's chance per attempt.
+	MaxOffers int
 
 	// MaxCodeAttempts caps the sessions that may reach their code during
 	// one share. Once reached, the payee stops serving over BLE (see
@@ -185,6 +194,7 @@ func DefaultParams() Params {
 		ComparisonTimeout:        defaultComparisonTimeout,
 		MaxCodeAttemptsPerWindow: defaultMaxCodeAttemptsPerWindow,
 		MaxCodeAttempts:          defaultMaxCodeAttempts,
+		MaxOffers:                defaultMaxOffers,
 		ChosenRetention:          defaultChosenRetention,
 		ChooseAttempts:           defaultChooseAttempts,
 		ChooseRetryDelay:         defaultChooseRetryDelay,
@@ -236,6 +246,7 @@ func (p Params) withDefaults() Params {
 	count(&p.MaxPeersPerFind, d.MaxPeersPerFind)
 	count(&p.MaxCodeAttemptsPerWindow, d.MaxCodeAttemptsPerWindow)
 	count(&p.MaxCodeAttempts, d.MaxCodeAttempts)
+	count(&p.MaxOffers, d.MaxOffers)
 
 	// RSSI is negative by nature, so only the unset zero means the
 	// default.

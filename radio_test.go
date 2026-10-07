@@ -77,7 +77,7 @@ func TestLateConnectionEvents(t *testing.T) {
 		},
 		candidates:  make(map[string]*candidate),
 		failed:      make(map[string]bool),
-		received:    make(map[string]bool),
+		received:    make(map[string]receivedOffer),
 		busyRetries: make(map[string]int),
 		retryAt:     make(map[string]time.Time),
 		active: &payerRun{
