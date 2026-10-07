@@ -24,6 +24,8 @@ const (
 	defaultChooseRetryDelay     = time.Second
 	defaultScanStopDebounce     = 2 * time.Second
 	defaultEventQueueLen        = 256
+	defaultFirstMessageTimeout  = 3 * time.Second
+	defaultMaxCentrals          = 8
 )
 
 // Params are the timing, selection and rate-limiting knobs of the Manager.
@@ -114,6 +116,18 @@ type Params struct {
 	// never block, so an overflowing queue drops events; the affected
 	// session then fails and the peer can retry.
 	EventQueueLen int
+
+	// FirstMessageTimeout is how long a payee waits, from a payer's
+	// subscription, for its first complete message before dropping it,
+	// so a silent or trickling payer cannot hold a connection and a
+	// partly received message for ever.
+	FirstMessageTimeout time.Duration
+
+	// MaxCentrals caps how many payers may be connected to a payee
+	// without a session at once. Each may hold a partly received
+	// message of up to 12288 bytes; payers beyond the cap are dropped as
+	// they subscribe.
+	MaxCentrals int
 }
 
 // DefaultParams returns the parameters the Manager uses unless told
@@ -138,6 +152,8 @@ func DefaultParams() Params {
 		ChooseRetryDelay:     defaultChooseRetryDelay,
 		ScanStopDebounce:     defaultScanStopDebounce,
 		EventQueueLen:        defaultEventQueueLen,
+		FirstMessageTimeout:  defaultFirstMessageTimeout,
+		MaxCentrals:          defaultMaxCentrals,
 	}
 }
 
@@ -168,11 +184,13 @@ func (p Params) withDefaults() Params {
 	duration(&p.ChosenRetention, d.ChosenRetention)
 	duration(&p.ChooseRetryDelay, d.ChooseRetryDelay)
 	duration(&p.ScanStopDebounce, d.ScanStopDebounce)
+	duration(&p.FirstMessageTimeout, d.FirstMessageTimeout)
 	count(&p.MaxSessionsPerWindow, d.MaxSessionsPerWindow)
 	count(&p.SuspiciousThreshold, d.SuspiciousThreshold)
 	count(&p.MaxBusyRetries, d.MaxBusyRetries)
 	count(&p.ChooseAttempts, d.ChooseAttempts)
 	count(&p.EventQueueLen, d.EventQueueLen)
+	count(&p.MaxCentrals, d.MaxCentrals)
 
 	// RSSI is negative by nature, so only the unset zero means the
 	// default.

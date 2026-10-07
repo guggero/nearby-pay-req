@@ -23,6 +23,12 @@ var (
 type centralConn struct {
 	maxChunk int
 	reasm    wire.Reassembler
+
+	// firstBy is when the payer has to have sent its first complete
+	// message, counted from its subscription so fragments cannot stretch
+	// it. Zero once that message arrived and a session deadline, if any,
+	// took over.
+	firstBy time.Time
 }
 
 // payeeRun is the one session the payee serves at a time.
@@ -83,6 +89,11 @@ type sharer struct {
 	advertising      bool
 	conns            map[string]*centralConn
 	active           *payeeRun
+
+	// wake fires at wakeAt, the earliest housekeeping deadline (see
+	// schedule).
+	wake   <-chan time.Time
+	wakeAt time.Time
 
 	// sessionStarts and codeFailures are the rolling windows for rate
 	// limiting and the suspicious-activity warning.
@@ -158,6 +169,7 @@ func (s *sharer) run(ctx context.Context) error {
 		if s.active != nil {
 			deadline = s.active.deadline
 		}
+		s.schedule()
 
 		select {
 		case <-ctx.Done():
@@ -168,6 +180,11 @@ func (s *sharer) run(ctx context.Context) error {
 			if err := s.handleEvent(ev); err != nil {
 				return err
 			}
+
+		// A housekeeping deadline passed.
+		case <-s.wake:
+			s.wake, s.wakeAt = nil, time.Time{}
+			s.housekeep()
 
 		// A reader finished reading the NFC tag.
 		case <-s.nfcReads:
@@ -187,6 +204,44 @@ func (s *sharer) run(ctx context.Context) error {
 				return err
 			}
 		}
+	}
+}
+
+// schedule arms wake for the earliest housekeeping deadline: a payer that
+// has yet to send its first complete message.
+func (s *sharer) schedule() {
+	var next time.Time
+	for _, conn := range s.conns {
+		if !conn.firstBy.IsZero() &&
+			(next.IsZero() || conn.firstBy.Before(next)) {
+
+			next = conn.firstBy
+		}
+	}
+
+	if next.Equal(s.wakeAt) {
+		return
+	}
+	s.wakeAt = next
+	if next.IsZero() {
+		s.wake = nil
+		return
+	}
+	s.wake = s.clock.TickAfter(next.Sub(s.clock.Now()))
+}
+
+// housekeep drops every payer that let its first-message deadline pass.
+// Whatever it sends later is ignored: the payee no longer knows it.
+func (s *sharer) housekeep() {
+	now := s.clock.Now()
+	for central, conn := range s.conns {
+		if conn.firstBy.IsZero() || now.Before(conn.firstBy) {
+			continue
+		}
+		log.Debugf("Nearby central %s sent no first message in time",
+			central)
+		s.radio.disconnectCentral(central)
+		delete(s.conns, central)
 	}
 }
 
@@ -260,9 +315,29 @@ func (s *sharer) stopBLE() {
 // handleEvent processes one peripheral callback.
 func (s *sharer) handleEvent(ev event) error {
 	switch ev.kind {
-	// A payer subscribed; we can now notify it.
+	// A payer subscribed; we can now notify it. It has to send its
+	// first message soon, and only so many payers may wait at once:
+	// each may hold a partly received message.
 	case evCentralReady:
-		s.conns[ev.id] = &centralConn{maxChunk: ev.maxChunk}
+		conn := &centralConn{maxChunk: ev.maxChunk}
+		mid := s.active != nil && s.active.central == ev.id
+		_, known := s.conns[ev.id]
+		switch {
+		case mid:
+
+		case !known && len(s.conns) >= s.params.MaxCentrals:
+			log.Debugf("Too many nearby centrals, dropping %s",
+				ev.id)
+			s.radio.disconnectCentral(ev.id)
+			return nil
+
+		default:
+			conn.firstBy = s.clock.Now().Add(
+				s.params.FirstMessageTimeout,
+			)
+		}
+		s.conns[ev.id] = conn
+
 		return nil
 
 	// One chunk from a payer.
@@ -325,6 +400,7 @@ func (s *sharer) handleWrite(central string, chunk []byte) error {
 	if msg == nil {
 		return nil
 	}
+	conn.firstBy = time.Time{}
 
 	// A CHOSEN opens a connection of its own and needs no session, so
 	// it is answered even while another payer is mid-session.
