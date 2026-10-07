@@ -176,7 +176,18 @@ The payer:
     of stopping after the first, so its user can pick the request whose
     code matches the payee they want to pay. Such a payer MUST NOT run a
     session with a payee it already received a request from in the same
-    search.
+    search while that request's comparison lasts (see
+    [Comparison code](#comparison-code)).
+  - MUST NOT hold more than a small number of received requests whose
+    comparison still lasts (4 is RECOMMENDED), counted across searches,
+    so restarting a search does not reset the count. Every such request is
+    a code an attacker may try to make a genuine payee show (see
+    [Security considerations](#security-considerations)). Once at the
+    limit, it MUST wait for the oldest comparison to end before running
+    another session.
+  - SHOULD bound the number of distinct payees it tracks in one search
+    (64 is RECOMMENDED) and ignore new ones beyond that, rather than
+    forgetting a payee that failed or did not match.
 
 Payee selection is a usability heuristic, not a security mechanism. Picking
 the wrong payee is caught by the comparison code.
@@ -198,14 +209,25 @@ The *chunk size* for each direction is `min(512, ATT_MTU − 3)`, where
 
 The payee:
   - MUST serve at most one payer at a time. A payer that writes while another
-    payer's session is active MUST be answered with `ABORT(BUSY)` (if a
-    notification to it is possible) and disconnected. A connection whose
-    first message is `CHOSEN` is not a session: it does not count towards
-    this limit or the rate limit below, and SHOULD be answered even while
-    another session is active.
+    payer's session is active, or while the payee holds the comparison of
+    an earlier session (see [Session flow](#session-flow)), MUST be
+    answered with `ABORT(BUSY)` (if a notification to it is possible) and
+    disconnected. A connection whose first message is `CHOSEN` is not a
+    session: it does not count towards this limit or the rate limits
+    below, and SHOULD be answered even while another session is active.
   - MUST rate-limit new sessions. It SHOULD accept at most one new session
     per second and at most 30 per rolling 60 seconds, and SHOULD answer any
     session beyond that limit with `ABORT(BUSY)`.
+  - MUST limit the sessions that reach their code (message 3): at most 6
+    per rolling 60 seconds is RECOMMENDED, and at most 50 while it shares
+    one request, after which it MUST stop serving that request over BLE.
+    A session counts once it reached its code, whatever its outcome. The
+    payee answers sessions beyond the per-minute limit with `ABORT(BUSY)`.
+  - MUST drop a payer that has not sent its first complete message within a
+    short time of enabling notifications (3 seconds is RECOMMENDED),
+    however many fragments it sent, and SHOULD bound the number of payers
+    connected without a session (8 is RECOMMENDED), so silent or trickling
+    connections cannot hold resources indefinitely.
 
 ### Chunk layer
 
@@ -242,6 +264,11 @@ The chunk layer has no retransmission or windowing. ATT delivers write
 requests and notifications on a live link reliably and in order, the
 exchange below alternates strictly between the two directions, and a broken
 link fails the session.
+
+A sender MUST stop sending a message's chunks once the session timeout
+(see [Session flow](#session-flow)) has passed, rather than finishing the
+message: a peer that accepts every chunk slowly must not stretch a session
+beyond its timeout.
 
 ### Message layer
 
@@ -357,7 +384,9 @@ code = BE-uint32(SHA-256(CODE_TAG ‖ h ‖ Na ‖ Nb)[0..4]) mod 1000000,
 The payee:
   - MUST draw `Nb` and send `C` in message 2, before it has received `Na`.
   - On message 3, MUST compute `code`, and SHOULD display it straight away,
-    replacing any code it displayed for an earlier session.
+    replacing any code it displayed for an earlier session. Message 3 is
+    where a session becomes a code attempt (see
+    [Connection setup](#connection-setup)).
   - MUST send `Nb` and `payment_request` in message 4, and only after it
     received message 3.
   - On message 5 with `ack` = 0, SHOULD tell the user the request was
@@ -365,10 +394,21 @@ The payee:
     delivery does not mean the payer's user picked this request; that is
     signalled separately with `CHOSEN`. The payee SHOULD keep sharing
     after a delivery until it receives `CHOSEN` or its user stops.
-  - SHOULD warn its user if three or more sessions within 60 seconds failed
-    after it displayed their code. That pattern is what an attacker
-    grinding for a matching code looks like (see
-    [Security considerations](#security-considerations)).
+  - After message 5 with `ack` = 0, MUST hold that session's comparison:
+    keep displaying its code and answer every new session with
+    `ABORT(BUSY)` until the comparison timeout passed (20 seconds is
+    RECOMMENDED) or that session's payer sent `CHOSEN`, whichever comes
+    first. Otherwise a second payer's session would replace the code the
+    first payer's user is still comparing. The hold MUST end at the
+    timeout whatever happens, so a session never reserves the payee
+    longer.
+  - SHOULD warn its user if four or more sessions within 60 seconds reached
+    their code, whether they ended with `ack` = 0 or not. Sessions are
+    counted regardless of the `ack`, because the `ack` is the payer's word
+    and comes before any comparison: an attacker repeating sessions until
+    a code matches would acknowledge every attempt. The warning is a
+    heuristic; several honest payers in quick succession trigger it as
+    well.
 
 The payer:
   - MUST send message 1 as the first message on a connection.
@@ -386,7 +426,9 @@ The payer:
     `ack` = 1 if it parsed it and cannot use it (for example, an unknown
     format or the wrong network). The payer MAY send the `ack` before its
     user has compared the codes: `ack` = 0 means "received and usable", not
-    "will pay".
+    "will pay". If message 5 cannot be sent, the payer MUST treat the
+    session as failed and MUST NOT present the request: the payee did not
+    count it as delivered and does not hold its code.
   - MUST disconnect after sending message 5, and SHOULD stop scanning.
 
 Either side:
@@ -407,6 +449,11 @@ The payer:
     can start one, before the user confirmed the codes match.
   - MUST discard the payment request if the user says the codes differ, and
     MUST NOT connect to that payee again in the current search.
+  - MUST NOT accept the user's confirmation once the comparison timeout
+    (see [Session flow](#session-flow)), counted from receiving message 4,
+    has passed: the payee may show another code by then, and every request
+    that can still be confirmed is a code an attacker may aim for. The
+    payer SHOULD search again instead.
   - SHOULD, if the user dismisses the confirmation without answering,
     discard the request and search again, without excluding that payee.
 
@@ -449,6 +496,8 @@ The payer:
     it received the payee's answer or a timeout passed.
   - MAY retry a few times if the connection fails; it MUST NOT retry after
     `ABORT(UNKNOWN_SESSION)`.
+  - MUST only count an empty `CHOSEN` with `version` 1 as the payee's
+    confirmation.
   - MUST NOT make the payment depend on the payee's answer. `CHOSEN` is a
     courtesy to the payee, not part of authenticating the request.
 
@@ -456,10 +505,16 @@ The payee:
   - MUST remember `chosen_token` for every session that ended with
     `ack` = 0, for a retention time (2 minutes is RECOMMENDED), and MUST
     forget all of them when it stops sharing the request.
+  - MUST forget a token once its retention passed, whether or not a
+    `CHOSEN` arrives, and SHOULD bound the number of tokens it keeps.
   - On `CHOSEN` with a remembered token, MUST answer with an empty `CHOSEN`,
-    MUST forget that token, and SHOULD stop sharing the request (BLE and
-    NFC) and tell its user which session chose it. It MAY keep sharing if
-    the request is meant to be paid more than once.
+    MUST forget that token, MUST end the hold of that session's comparison
+    if it still lasts, and MAY stop sharing the request (BLE and NFC) and
+    tell its user which session chose it. A `CHOSEN` is the word of
+    whoever completed that session, which may be an attacker's own
+    session, not proof that the intended payer chose or paid: a payee
+    SHOULD NOT treat it as a payment, and stopping the share on it is a
+    convenience the payee's user can undo by sharing again.
   - On `CHOSEN` with any other token, or a body that is not 32 bytes, MUST
     answer `ABORT(UNKNOWN_SESSION)` or `ABORT(PROTOCOL_ERROR)` respectively
     and change nothing.
@@ -469,6 +524,8 @@ The payee:
 
 An `ABORT` body is a two-byte reason code. For `VERSION_UNSUPPORTED`, it is
 followed by one byte: the highest message version the sender supports.
+Bytes after the fields defined for a reason are reserved for future
+extensions: a sender MUST NOT add any, and a receiver MUST ignore them.
 
 | Code | Name | Meaning |
 |---|---|---|
@@ -490,9 +547,10 @@ A receiver of an `ABORT`:
   - MUST treat an unknown reason code as a generic failure.
 
 A payer receiving `ABORT(BUSY)` SHOULD move on to the next candidate payee and
-SHOULD retry the same payee after a delay (1.5 seconds is RECOMMENDED), a
-limited number of times (3 is RECOMMENDED). With several payers in one room
-this is what lets each of them get the request in turn. A payer receiving
+SHOULD retry the same payee after a delay (2 seconds is RECOMMENDED), a
+limited number of times (12 is RECOMMENDED, so the retries outlast a held
+comparison). With several payers in one room this is what lets each of
+them get the request in turn. A payer receiving
 `ABORT(VERSION_UNSUPPORTED)` MAY open a new session using the indicated
 version if it supports that version.
 
@@ -506,19 +564,27 @@ environment, and SHOULD let applications do so. In one place:
 | Parameter | Recommended | Where |
 |---|---|---|
 | Session timeout | 10 s | [Session flow](#session-flow) |
+| First-message timeout | 3 s | [Connection setup](#connection-setup) |
+| Payers connected without a session | 8 | [Connection setup](#connection-setup) |
+| Comparison timeout (payee hold, payer confirmation) | 20 s | [Session flow](#session-flow), [Comparison code](#comparison-code) |
 | Collection window | 800 ms | [Discovery](#discovery-and-peer-selection) |
 | RSSI smoothing weight | 0.3 | [Discovery](#discovery-and-peer-selection) |
 | Proximity floor | −75 dBm | [Discovery](#discovery-and-peer-selection) |
+| Requests a payer may hold for confirmation | 4 | [Discovery](#discovery-and-peer-selection) |
+| Payees tracked per search | 64 | [Discovery](#discovery-and-peer-selection) |
 | Minimum gap between sessions | 1 s | [Connection setup](#connection-setup) |
 | Sessions per rolling window | 30 per 60 s | [Connection setup](#connection-setup) |
-| Suspicious failures | 3 per 60 s | [Session flow](#session-flow) |
-| Busy retry delay, retries | 1.5 s, 3 | [ABORT](#abort) |
+| Code attempts per rolling window | 6 per 60 s | [Connection setup](#connection-setup) |
+| Code attempts per shared request | 50 | [Connection setup](#connection-setup) |
+| Suspicious code attempts | 4 per 60 s | [Session flow](#session-flow) |
+| Busy retry delay, retries | 2 s, 12 | [ABORT](#abort) |
 | `chosen_token` retention | 2 min | [Choosing a request](#choosing-a-request) |
 
 A busy room (a shop counter, an event) typically wants a higher session cap
-and a longer collection window. Any change to the rate limits or the
-suspicious-failure threshold trades resistance against code grinding for
-throughput; see [Security considerations](#security-considerations).
+and a longer collection window. Any change to the code-attempt limits, the
+number of requests a payer may hold or the comparison timeout changes the
+bound on code grinding derived in [Rationale](#noise-nn-with-a-commitreveal-comparison-code);
+the suspicious-activity threshold only changes when the user is warned.
 
 ### NFC carrier
 
@@ -534,11 +600,18 @@ The payee:
     identifier code is chosen per the [URI Record Type Definition][urirtd];
     `0x00` (no abbreviation) applies to `lightning:` and `bitcoin:`.
   - MUST answer `SELECT` of the NDEF Tag Application with status `6A82` (file
-    not found) whenever it is not displaying a payment request, so it never
-    captures a tap meant for another application.
+    not found) whenever it is not displaying a payment request.
+  - SHOULD take itself out of the platform's routing for that AID whenever
+    it is not displaying a payment request (on Android: disable its host
+    card emulation service component, or remove a dynamically registered
+    AID), and make sure an abandoned share, a crash or a restart does not
+    leave it registered. Answering `6A82` alone does not hand the tap to
+    another application: platforms pick the service for an AID before any
+    command reaches it.
   - SHOULD serve the tag only while the device is unlocked.
   - MAY report to its user that the request was read once a reader has read
-    the whole NDEF file.
+    every byte of the NDEF file, in whatever order. A read of only part of
+    the file, or at its end, is not a read of the request.
 
 A payer that reads an NDEF URI record from a tag MUST process it as described
 in [Payment request payload](#payment-request-payload). A payer MAY skip the
@@ -549,22 +622,37 @@ A payer that supports both carriers SHOULD scan BLE and keep an NFC reader
 open at the same time. A completed NFC read SHOULD cancel a BLE session that
 is still in progress.
 
+A payee SHOULD start and stop serving the tag as NFC is switched on and off
+while it shares, rather than deciding once when it starts.
+
 ## Rationale
 
 ### Choosing among several requests
 
 Two payments can happen in one room at the same time. A payer that took
 only the strongest payee would sometimes take the wrong one, and the user
-would have to reject it and search again. Collecting every request in range
-and letting the user pick by code avoids that. It does not weaken the code:
-an attacker's request in the list carries a code that matches no payee's
-screen.
+would have to reject it and search again. Collecting the requests in range
+and letting the user pick by code avoids that. It does weaken the code in
+one respect: every collected request is a code the user may accept, so an
+attacker who served several of them only needs the genuine payee to show
+any one of those codes. That is why a payer may hold only a few requests
+for confirmation at a time, each for a limited time, across searches (see
+[the grinding bound](#noise-nn-with-a-commitreveal-comparison-code)).
 
 A payee that keeps sharing after a delivery is what lets the second payer
 in the room get the same request; `CHOSEN` is what lets it stop once the
-right payer has it. It travels on a new connection rather than keeping the
-session's link open while the user compares codes, because an open link
-would hold the payee's single session slot, and many phones handle several
+right payer has it. Meanwhile the payee holds the delivered code on screen
+and turns other payers away as busy, so a second payer cannot silently
+replace the code the first payer's user is comparing; the hold ends with
+that payer's `CHOSEN` or after the comparison timeout, and busy payers
+retry. The hold costs a full session, which the code-attempt limits
+bound, and always expires, so a payer, honest or not, never reserves a
+payee for longer. A payer collecting from several payees holds each of
+them for the comparison timeout at most.
+
+`CHOSEN` travels on a new connection rather than keeping the session's
+link open while the user compares codes, because an open link would hold
+the payee's single session slot, and many phones handle several
 simultaneous BLE links poorly. The token is derived rather than random, so
 neither side has to send anything extra during the session, and it is only
 known to the two ends because it depends on both encrypted nonces.
@@ -670,12 +758,37 @@ authenticated key agreement by Vaudenay:
   learns the payee's `Nb`, which is hidden behind `C`, so the payee's code is
   uniformly random to it as well.
 
-Each attempt therefore succeeds with probability 10⁻⁶, and no offline work
-improves on that. The only remaining strategy is to repeat sessions against
-the payee until the codes collide. The rate limit (30 sessions per minute)
-pushes a 50 % chance of success out to about 16 days of uninterrupted
-attempts. Every attempt also makes the payee's displayed code change and
-counts towards the suspicious-activity warning.
+Each pairing of one payer session with one payee session therefore
+matches with probability 10⁻⁶, and no offline work improves on that. What
+remains is repetition: an attacker completes its own sessions with the
+payer (posing as payees) and with the genuine payee (posing as a payer),
+and wins when the genuine payee displays a code equal to one the payer's
+user will accept for an attacker request. With `K` such codes acceptable
+at once and `M` payee sessions that reach their code, the chance is about
+
+```
+P = 1 − (1 − K / 1,000,000)^M  ≈  K · M / 1,000,000
+```
+
+(treating the six-digit reduction as uniform; its modulo bias does not
+change the result). The protocol bounds both factors instead of relying on
+the attacker's patience:
+
+* `K` is the number of requests a payer holds for confirmation: at most 4
+  at a time across searches, each only for the comparison timeout. A payer
+  that does not collect has `K` = 1.
+* `M` is the number of payee sessions that reach their code. They are
+  counted whatever their outcome, because an attacker would acknowledge
+  every attempt; at most 6 per minute and 50 per shared request.
+
+So against one shared request, `P` stays below 4 · 50 / 10⁶ = 0.02 %
+(0.005 % for a payer that does not collect), however long the attacker
+tries, and changing BLE identities changes neither bound. Matching codes
+alone are not enough either: the user must also pick the attacker's
+request. These figures are for the RECOMMENDED parameters; an application
+that raises the limits raises the bound accordingly. The construction
+itself has not been formally analysed beyond the SAS literature cited
+above; review of the multi-session argument is welcome.
 
 Six digits match Bluetooth numeric comparison and are easy to compare at a
 glance.
@@ -717,22 +830,30 @@ distinguishable groups.
 | Threat | Mitigation | Residual risk |
 |---|---|---|
 | A nearby attacker advertises the service and serves its own payment request, possibly copying the real amount and description | The comparison code. "Codes differ" excludes that payee | A user who never compares the codes is not protected. Wallets should make the comparison an explicit step, not a passive banner. NFC and QR are unaffected. |
-| Active man in the middle relaying between both devices | The commitment ordering caps success at 10⁻⁶ per attempt | none material |
-| Grinding: repeated sessions against the payee until the codes collide | Rate limiting, a visibly changing code, the suspicious-activity warning | none material |
+| Identity of the peer | none: Noise NN only protects the channel against passive listeners | The human comparison of the code is what authenticates the exchange the user picked |
+| Active man in the middle relaying between both devices | The commitment ordering caps success at 10⁻⁶ per pair of sessions | See the next row |
+| Grinding: repeated sessions until the payee shows a code the payer's user accepts | The payer holds at most 4 requests for confirmation, each for 20 s; the payee counts every session that reaches its code, at most 6 per minute and 50 per shared request; the warning | Below 0.02 % per shared request with the RECOMMENDED parameters (see [Rationale](#noise-nn-with-a-commitreveal-comparison-code)); the warning is a heuristic with false positives in busy rooms |
+| A second payer replacing the code the first payer's user compares | The payee holds a delivered code for the comparison timeout and answers other payers `BUSY` | A held payee answers other payers `BUSY` for up to 20 s; an attacker can renew holds only within the code-attempt limits |
 | Replay of an earlier session | Fresh ephemerals and nonces in every session; the code depends on both | none |
-| Passive eavesdropping on the payment request (amount, node id, address) | ChaCha20-Poly1305 from message 2 onwards | The advertisement itself reveals that a payment request is being displayed nearby |
+| Passive eavesdropping on the payment request (amount, node id, address) | ChaCha20-Poly1305 from message 2 onwards | The advertisement itself reveals that a payment request is being displayed nearby. Any nearby party can run its own payer session and read the request: encryption does not restrict who the audience is, exactly as anyone can photograph a displayed QR code |
+| Proximity | RSSI-based payee selection | RSSI is a usability heuristic an attacker can influence with transmit power; it neither establishes distance nor rules out relays |
 | Tracking through stable identifiers | No static keys, no local name, no manufacturer or service data, private addresses, advertising only while a request is displayed | The shared service UUID identifies the protocol, not the wallet |
-| Pairing prompt abuse | No attribute requires security, so the OS never offers pairing | none |
-| Malformed input (memory exhaustion, parser attacks) | Bounded message length (12288 bytes), bounded payload (8192 bytes), strict chunk and TLV rules, one payer at a time, session timeout | none material |
-| A forged `CHOSEN`, to stop a payee from sharing | `chosen_token` depends on both nonces, which only travel encrypted, so only a payer that completed a session with the payee can produce it | An attacker that completes its own session as a payer can stop the share, as it could by holding the session slot; the payee's user can share again, and QR and NFC still work |
+| Pairing prompt abuse | Compliant attributes require no security, so a compliant payee never makes the OS offer pairing | A rogue peripheral advertising the service can require security on its own attributes, and some platforms then start pairing on their own; payers cannot fully prevent that prompt |
+| Malformed input (memory exhaustion, parser attacks) | Bounded message length (12288 bytes), bounded payload (8192 bytes), strict chunk and TLV rules, one payer at a time, a session timeout enforced across every chunk, a first-message timeout, bounded payers without a session, tokens and tracked payees | Radio-level denial of service remains possible; on iOS a payee cannot force a payer's link closed and only stops serving it |
+| A forged `CHOSEN`, to stop a payee from sharing | `chosen_token` depends on both nonces, which only travel encrypted, so only a payer that completed a session with the payee can produce it | An attacker that completes its own session as a payer can send `CHOSEN` and stop the share if the payee stops on it, as it could by holding the session slot; `CHOSEN` is no proof that the intended payer chose or paid. The payee's user can share again, and QR still works |
 | Replay of an observed `CHOSEN` | The payee forgets a token on first use, and an eavesdropper only sees a token as it is used | none |
 | A forged `ABORT` | `ABORT` can only end a session, never change what it delivered | An attacker in range can keep disrupting sessions; QR and NFC still work |
 | Slot holding: an attacker connects and stalls | One payer at a time, the session timeout, rate limits | A persistent attacker in range can keep the BLE share busy; QR and NFC still work |
 | NFC relay of the payee's tag to a distant payer | none needed: a relay delivers the payee's genuine request | none |
-| The emulated tag capturing taps meant for other applications | `6A82` whenever no request is displayed | none |
+| An attacker's tag or emulator presented to the payer instead of the payee's | The user physically chooses which device to tap | Outside this protocol's protection, as with a QR code pasted over the genuine one |
+| The emulated tag capturing taps meant for other applications | `6A82` whenever no request is displayed, and the HCE service removed from AID routing while not sharing | Platform routing behaviour (conflict resolution, the time a registration change takes) varies and needs testing per platform |
 
-Implementations SHOULD NOT log payment requests or comparison codes at log
-levels enabled in production builds.
+Implementations MUST NOT log payment requests or comparison codes at log
+levels enabled in production builds, and MUST NOT log chosen tokens, keys
+or nonces at all. A development-only level such as trace MAY carry
+requests and codes for debugging; an application that ships with such a
+level enabled leaks them, so it MUST keep that level off in production
+builds rather than assume nobody enables it.
 
 ## Universality
 

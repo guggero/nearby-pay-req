@@ -127,10 +127,13 @@ type Radio interface {
 	// tears down its successor. Idempotent.
 	Disconnect(peerID string, connID int)
 
-	// SetHceActive makes the app's HCE service the preferred one while
-	// active (Android CardEmulation.setPreferredService on the
-	// foreground activity) and releases it on false. A no-op where there
-	// is no HCE. The tag content itself is served by the Manager through
+	// SetHceActive makes the app's HCE service eligible for NFC routing
+	// and the preferred one while active (Android: enable the service
+	// component, then CardEmulation.setPreferredService on the
+	// foreground activity), and takes it out of routing again on false,
+	// so an idle app never takes part in routing the NDEF AID: answering
+	// 6A82 does not hand a tap on to another app. A no-op where there is
+	// no HCE. The tag content itself is served by the Manager through
 	// ProcessAPDU.
 	SetHceActive(active bool)
 }

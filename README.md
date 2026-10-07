@@ -31,8 +31,12 @@ vectors byte for byte.
 
   Both sides derive the code from the handshake hash and both nonces. The
   payee commits to its nonce before it learns the payer's, so a man in the
-  middle cannot grind for a matching code: each attempt succeeds with
-  probability 10⁻⁶.
+  middle cannot grind for a matching code offline: each pair of sessions
+  matches with probability 10⁻⁶. Repeating sessions is bounded too: the
+  payee counts every session that shows a code (6 per minute, 50 per
+  shared request) and a payer holds at most 4 requests for confirmation at
+  a time, which keeps an attacker's chance below 0.02 % per shared
+  request.
 - **NFC carrier (Android payees).** The same string is served as a read-only
   NFC Forum Type 4 Tag holding one NDEF URI record. Any NFC reader, wallet or
   not, sees exactly what the QR code shows. The physical tap is the
@@ -73,11 +77,15 @@ err := mgr.Share(ctx, "lightning:lnbc1...", nearby.ShareOptions{
 	case nearby.PeerConnected:
 		showCode(ev.Code) // the payer sees the same code
 	case nearby.Delivered:
-		markDelivered(ev.Code) // received, not necessarily picked
+		markDelivered(ev.Code) // held on screen while the payer compares
+	case nearby.ComparisonExpired:
+		releaseCode(ev.Code) // the next payer may replace it now
 	case nearby.Chosen:
 		markPaidSoon(ev.Code) // Share returns nil right after this
 	case nearby.SuspiciousActivity:
-		warn(ev.FailedSessions, ev.Window)
+		warn(ev.Sessions, ev.Window)
+	case nearby.AttemptLimitReached:
+		offerToShareAgain() // BLE stopped; NFC keeps going
 	}
 	return nil
 })
@@ -90,8 +98,9 @@ err = mgr.Find(ctx, nearby.FindOptions{
 	},
 }, func(ev nearby.FindEvent) error {
 	if ev, ok := ev.(nearby.Received); ok {
-		// Ask the user to compare ev.Code with the payee's screen.
-		// If the codes differ, call Find again with
+		// Ask the user to compare ev.Code with the payee's screen,
+		// and stop accepting a confirmation at ev.ExpiresAt. If the
+		// codes differ, call Find again with
 		// FindOptions{Exclude: []string{ev.PeerID}}.
 	}
 	return nil
@@ -143,14 +152,25 @@ err = mgr.Choose(ctx, picked.PeerID, picked.ChosenToken)
 ```
 
 - **Payee.** It keeps sharing after a `Delivered`, so the other payer in the
-  room can still get the request. It stops (and `Share` returns nil) when a
-  payer sends `Chosen`. Set `ShareOptions.ContinueAfterChosen` for a request
-  several people pay, such as a donation address.
+  room can still get the request. For `Params.ComparisonTimeout` (20 s) it
+  holds the delivered code on screen and turns other payers away as busy,
+  so nobody replaces the code its payer is comparing; `Chosen` from that
+  payer ends the hold, otherwise `ComparisonExpired` does. It stops (and
+  `Share` returns nil) when a payer sends `Chosen`. Set
+  `ShareOptions.ContinueAfterChosen` for a request several people pay,
+  such as a donation address. A `Chosen` is the word of whoever completed
+  that session, not proof of payment.
+- **Payer.** Each `Received` is good for confirming until its `ExpiresAt`;
+  a collecting find reports `OfferExpired` then, drop the request from the
+  picker. A Manager hands out at most `Params.MaxOffers` (4) requests per
+  comparison timeout, across finds: every request the user may still
+  confirm is a code an attacker may aim for.
 - **Choose.** It reconnects to the payee and sends the session's token. Only
   the two ends of the session can compute it. It retries a few times; the
   payment never depends on its result.
 - **Busy payees.** A payer that finds a payee busy with another payer tries
-  again after `Params.BusyRetryDelay` instead of skipping it.
+  again after `Params.BusyRetryDelay` instead of skipping it, long enough to
+  outlast a held comparison.
 
 ### Tuning
 
@@ -169,8 +189,9 @@ mgr := nearby.New(nearby.Config{
 })
 ```
 
-Raising the rate limits or the suspicious-activity threshold trades
-resistance to code grinding for throughput. The spec's
+Raising `MaxCodeAttemptsPerWindow`, `MaxCodeAttempts`, `MaxOffers` or
+`ComparisonTimeout` raises the bound on code grinding; the spec derives
+it. The spec's
 [Parameters](spec/blip-nearby-payment-requests.md#parameters) section lists
 the recommended values.
 
@@ -214,9 +235,12 @@ What implementations most often get wrong:
   through another radio method.
 - **Android HCE.** Register a `HostApduService` for AID `D2760000850101`
   in category `other`, with `requireDeviceUnlock="true"`. It must never be a
-  payment service. Make it the preferred service only while `SetHceActive`
-  is on. The tag answers `6A82` whenever nothing is shared, so it never
-  captures taps meant for other apps.
+  payment service. Declare it disabled, enable the component and make it
+  the preferred service only while `SetHceActive` is on, and disable it
+  again on startup in case a share was abandoned. The tag answers `6A82`
+  whenever nothing is shared, but Android picks the service for an AID
+  before any APDU arrives, so a registered idle service can still take
+  part in routing taps meant for other apps.
 - **Android permissions.** `BLUETOOTH_SCAN` (with `neverForLocation`),
   `BLUETOOTH_CONNECT` and `BLUETOOTH_ADVERTISE`. The feature needs Android 12
   or later, which is where these permissions exist.
