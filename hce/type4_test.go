@@ -201,3 +201,83 @@ func FuzzProcess(f *testing.F) {
 		require.GreaterOrEqual(t, len(resp), 2)
 	})
 }
+
+// TestReadCoverage checks that only a reader that got every byte of the
+// NDEF file counts as having read it, whatever order it read in: reading at
+// the end of the file, its tail only, or around a gap must not be reported
+// as a completed read.
+func TestReadCoverage(t *testing.T) {
+	t.Parallel()
+
+	message, err := ndef.EncodeURIMessage("bitcoin:bc1q")
+	require.NoError(t, err)
+	fileLen := 2 + len(message)
+
+	// read builds a READ BINARY of le bytes at offset.
+	read := func(offset, le int) []byte {
+		return []byte{0x00, 0xB0, byte(offset >> 8), byte(offset),
+			byte(le)}
+	}
+
+	tests := []struct {
+		name  string
+		reads [][]byte
+		want  int32
+	}{{
+		name:  "eof only",
+		reads: [][]byte{read(fileLen, 1)},
+	}, {
+		name:  "tail only",
+		reads: [][]byte{read(2, 0)},
+	}, {
+		name:  "gap",
+		reads: [][]byte{read(0, 2), read(4, 0)},
+	}, {
+		name:  "sequential",
+		reads: [][]byte{read(0, 2), read(2, len(message))},
+		want:  1,
+	}, {
+		name:  "out of order",
+		reads: [][]byte{read(5, 0), read(0, 5)},
+		want:  1,
+	}, {
+		name: "reread",
+		reads: [][]byte{
+			read(0, 0), read(0, 0), read(3, 2), read(0, 0),
+		},
+		want: 1,
+	}}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var reads atomic.Int32
+			tag := New()
+			require.NoError(t, tag.SetMessage(message, func() {
+				reads.Add(1)
+			}))
+			require.Equal(t, swOK, tag.Process(
+				apdu(t, "00A4040007D276000085010100"),
+			))
+			require.Equal(t, swOK, tag.Process(
+				apdu(t, "00A4000C02E104"),
+			))
+			for _, cmd := range tc.reads {
+				resp := tag.Process(cmd)
+				require.Equal(t, swOK, resp[len(resp)-2:])
+			}
+			require.Equal(t, tc.want, reads.Load())
+		})
+	}
+
+	// A replaced message starts its coverage from scratch.
+	var reads atomic.Int32
+	tag := New()
+	require.NoError(t, tag.SetMessage(message, func() { reads.Add(1) }))
+	tag.Process(apdu(t, "00A4040007D276000085010100"))
+	tag.Process(apdu(t, "00A4000C02E104"))
+	tag.Process(read(0, 4))
+	require.NoError(t, tag.SetMessage(message, func() { reads.Add(1) }))
+	tag.Process(apdu(t, "00A4040007D276000085010100"))
+	tag.Process(apdu(t, "00A4000C02E104"))
+	tag.Process(read(4, 0))
+	require.Zero(t, reads.Load())
+}

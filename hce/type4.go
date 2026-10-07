@@ -86,10 +86,13 @@ type Tag struct {
 	appSelected bool
 	file        selectedFile
 
-	// servedUpTo is the highest NDEF file offset returned since the
-	// application was last selected; notified latches onRead.
-	servedUpTo int
-	notified   bool
+	// covered marks every NDEF file byte returned since the application
+	// was last selected, and coveredCount counts them: only a reader
+	// that got every byte read the whole file, whatever order it read
+	// it in. notified latches onRead.
+	covered      []bool
+	coveredCount int
+	notified     bool
 }
 
 // New returns a tag with no message loaded.
@@ -136,7 +139,8 @@ func (t *Tag) Clear() {
 func (t *Tag) resetSelection() {
 	t.appSelected = false
 	t.file = fileNone
-	t.servedUpTo = 0
+	t.covered = make([]bool, len(t.ndef))
+	t.coveredCount = 0
 	t.notified = false
 }
 
@@ -264,11 +268,18 @@ func (t *Tag) handleReadBinary(apdu []byte) ([]byte, func()) {
 
 	// A complete read is reported once per application selection, so a
 	// reader re-reading the same tag in one session doesn't spam events.
+	// Complete means every byte of the file went out: a read at the end
+	// of the file, or of its tail only, is not a read of the request.
 	if t.file != fileNDEF {
 		return resp, nil
 	}
-	t.servedUpTo = max(t.servedUpTo, offset+n)
-	if t.notified || t.servedUpTo < len(t.ndef) || t.onRead == nil {
+	for i := offset; i < offset+n; i++ {
+		if !t.covered[i] {
+			t.covered[i] = true
+			t.coveredCount++
+		}
+	}
+	if t.notified || t.coveredCount < len(t.ndef) || t.onRead == nil {
 		return resp, nil
 	}
 	t.notified = true
