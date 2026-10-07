@@ -278,7 +278,7 @@ func (s *sharer) handleWrite(central string, chunk []byte) error {
 		// A write before the payer subscribed to notifications: we
 		// could never answer it.
 		log.Debugf("Write from unsubscribed central %s", central)
-		s.radio.native.DisconnectCentral(central)
+		s.radio.disconnectCentral(central)
 		return nil
 	}
 
@@ -302,7 +302,7 @@ func (s *sharer) handleWrite(central string, chunk []byte) error {
 	// Another payer is mid-session: turn this one away.
 	if s.active != nil && s.active.central != central {
 		s.notify(central, conn, wire.EncodeAbort(wire.AbortBusy))
-		s.radio.native.DisconnectCentral(central)
+		s.radio.disconnectCentral(central)
 		delete(s.conns, central)
 		return nil
 	}
@@ -317,7 +317,7 @@ func (s *sharer) handleWrite(central string, chunk []byte) error {
 	out, err := s.active.sess.Handle(msg)
 	if !s.notifyAll(central, conn, out.Send) {
 		s.active = nil
-		s.radio.native.DisconnectCentral(central)
+		s.radio.disconnectCentral(central)
 		return s.sessionFailed(
 			FailureRadioError,
 			true,
@@ -344,7 +344,7 @@ func (s *sharer) handleWrite(central string, chunk []byte) error {
 	if out.Delivered {
 		code, token := s.active.lastCode, s.active.token
 		s.active = nil
-		s.radio.native.DisconnectCentral(central)
+		s.radio.disconnectCentral(central)
 		delete(s.conns, central)
 
 		if token != nil {
@@ -368,7 +368,7 @@ func (s *sharer) handleChosen(central string, conn *centralConn,
 	msg wire.Message) error {
 
 	defer func() {
-		s.radio.native.DisconnectCentral(central)
+		s.radio.disconnectCentral(central)
 		delete(s.conns, central)
 	}()
 
@@ -428,7 +428,7 @@ func (s *sharer) startSession(central string, conn *centralConn) (bool, error) {
 	if limited {
 		log.Debugf("Rate limiting nearby session from %s", central)
 		s.notify(central, conn, wire.EncodeAbort(wire.AbortBusy))
-		s.radio.native.DisconnectCentral(central)
+		s.radio.disconnectCentral(central)
 		delete(s.conns, central)
 
 		return false, nil
@@ -459,7 +459,7 @@ func (s *sharer) dropCentral(central string, err error) error {
 			wire.AbortProtocolError,
 		))
 	}
-	s.radio.native.DisconnectCentral(central)
+	s.radio.disconnectCentral(central)
 	delete(s.conns, central)
 
 	if s.active == nil || s.active.central != central {
@@ -491,7 +491,7 @@ func (s *sharer) failActive(reason FailureReason) error {
 	}
 	central, codeShown := s.active.central, s.active.codeShown
 	s.active = nil
-	s.radio.native.DisconnectCentral(central)
+	s.radio.disconnectCentral(central)
 	delete(s.conns, central)
 
 	return s.sessionFailed(reason, codeShown)
@@ -550,7 +550,8 @@ func (s *sharer) notify(central string, conn *centralConn, msg []byte) bool {
 		return false
 	}
 	for _, c := range chunks {
-		if err := s.radio.native.Notify(central, c); err != nil {
+		err := s.radio.notify(central, c, nativeOpTimeout)
+		if err != nil {
 			log.Debugf("Notify to central %s failed: %v", central,
 				err)
 			return false

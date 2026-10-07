@@ -239,6 +239,7 @@ type rogue struct {
 	events chan event
 	reasm  wire.Reassembler
 	chunk  int
+	connID int
 }
 
 // rogueCallback forwards central callbacks to the rogue's channel.
@@ -250,18 +251,30 @@ type rogueCallback struct {
 func (r *rogueCallback) OnAdvertisement(string, int) {}
 
 // OnConnected implements radio.CentralCallback.
-func (r *rogueCallback) OnConnected(id string, maxChunk int) {
-	r.events <- event{kind: evConnected, id: id, maxChunk: maxChunk}
+func (r *rogueCallback) OnConnected(id string, connID int, maxChunk int) {
+	r.events <- event{
+		kind:     evConnected,
+		id:       id,
+		connID:   connID,
+		maxChunk: maxChunk,
+	}
 }
 
 // OnNotify implements radio.CentralCallback.
-func (r *rogueCallback) OnNotify(id string, chunk []byte) {
-	r.events <- event{kind: evNotify, id: id, chunk: chunk}
+func (r *rogueCallback) OnNotify(id string, connID int, chunk []byte) {
+	r.events <- event{kind: evNotify, id: id, connID: connID, chunk: chunk}
 }
 
 // OnDisconnected implements radio.CentralCallback.
-func (r *rogueCallback) OnDisconnected(id string, reason string) {
-	r.events <- event{kind: evDisconnected, id: id, reason: reason}
+func (r *rogueCallback) OnDisconnected(id string, connID int,
+	reason string) {
+
+	r.events <- event{
+		kind:   evDisconnected,
+		id:     id,
+		connID: connID,
+		reason: reason,
+	}
 }
 
 // OnScanFailed implements radio.CentralCallback.
@@ -285,7 +298,8 @@ func newRogue(t *testing.T, world *nearbytest.World, id string) *rogue {
 func (r *rogue) connect(t *testing.T, peer string) {
 	t.Helper()
 
-	require.NoError(t, r.radio.Connect(peer, "", "", ""))
+	r.connID++
+	require.NoError(t, r.radio.Connect(peer, r.connID, "", "", ""))
 
 	// Skip the disconnect of a previous link the rogue dropped itself.
 	ev := r.next(t)
@@ -319,8 +333,13 @@ func (r *rogue) send(t *testing.T, peer string, msg []byte) {
 	chunks, err := wire.Chunk(msg, r.chunk)
 	require.NoError(t, err)
 	for _, c := range chunks {
-		require.NoError(t, r.radio.Write(peer, c))
+		require.NoError(t, r.radio.Write(peer, r.connID, c, 1000))
 	}
+}
+
+// disconnect drops the rogue's current connection to the sharer.
+func (r *rogue) disconnect(peer string) {
+	r.radio.Disconnect(peer, r.connID)
 }
 
 // receive reads one complete message from the sharer.

@@ -4,11 +4,17 @@ import (
 	"bytes"
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/guggero/nearby-pay-req/radio"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/fn/v2"
+)
+
+const (
+	// nativeOpTimeout bounds one blocking native write or notification.
+	nativeOpTimeout = 2 * time.Second
 )
 
 // eventKind is what a radio event reports.
@@ -35,6 +41,9 @@ type event struct {
 
 	// id is the central (payee side) or peer (payer side) id.
 	id string
+
+	// connID is the payer-side connection an event belongs to.
+	connID int
 
 	// chunk is a copy of the value written or notified.
 	chunk []byte
@@ -82,6 +91,12 @@ type radioMux struct {
 	shareSink sink
 	findSink  sink
 
+	// advGen numbers advertisements like scanGen numbers scans: each
+	// native StartAdvertising gets a callback carrying the next number,
+	// and stopping advertising moves past it, so a closed GATT server's
+	// late callbacks never reach a share.
+	advGen uint64
+
 	// scanning is whether the native scan runs; stopGen invalidates a
 	// pending debounced stop when a new scan starts.
 	scanning bool
@@ -92,6 +107,9 @@ type radioMux struct {
 	// a scan reports after it was stopped or replaced is told apart
 	// from one of the scan running now and dropped.
 	scanGen uint64
+
+	// lastConnID is the last connection id handed out by connect.
+	lastConnID atomic.Int64
 
 	*fn.ContextGuard
 }
@@ -118,14 +136,18 @@ func (r *radioMux) status() int {
 func (r *radioMux) startAdvertising(s sink) error {
 	r.mu.Lock()
 	r.shareSink = s
+	r.advGen++
+	gen := r.advGen
 	r.mu.Unlock()
 
 	err := r.native.StartAdvertising(
-		ServiceUUID, RxUUID, TxUUID, &peripheralCallback{r: r},
+		ServiceUUID, RxUUID, TxUUID,
+		&peripheralCallback{r: r, advGen: gen},
 	)
 	if err != nil {
 		r.mu.Lock()
 		r.shareSink = nil
+		r.advGen++
 		r.mu.Unlock()
 	}
 
@@ -138,7 +160,49 @@ func (r *radioMux) stopAdvertising() {
 
 	r.mu.Lock()
 	r.shareSink = nil
+	r.advGen++
 	r.mu.Unlock()
+}
+
+// notify sends one chunk to a central, blocking for at most timeout.
+func (r *radioMux) notify(central string, chunk []byte,
+	timeout time.Duration) error {
+
+	return r.native.Notify(central, chunk, millis(timeout))
+}
+
+// disconnectCentral drops one central.
+func (r *radioMux) disconnectCentral(central string) {
+	r.native.DisconnectCentral(central)
+}
+
+// connect opens a new connection to peer and returns the id its events
+// carry.
+func (r *radioMux) connect(peer string) (int, error) {
+	connID := int(r.lastConnID.Add(1))
+	err := r.native.Connect(peer, connID, ServiceUUID, RxUUID, TxUUID)
+
+	return connID, err
+}
+
+// write writes one chunk on connection connID, blocking for at most
+// timeout.
+func (r *radioMux) write(peer string, connID int, chunk []byte,
+	timeout time.Duration) error {
+
+	return r.native.Write(peer, connID, chunk, millis(timeout))
+}
+
+// disconnect closes connection connID to peer.
+func (r *radioMux) disconnect(peer string, connID int) {
+	r.native.Disconnect(peer, connID)
+}
+
+// millis converts a timeout for the native radio, which takes whole
+// milliseconds. A positive timeout never rounds down to zero, which could
+// read as "no time at all" or "no limit".
+func millis(d time.Duration) int {
+	return int(max(d.Milliseconds(), 1))
 }
 
 // startScan subscribes s to central events and makes sure the native scan
@@ -256,6 +320,7 @@ func (r *radioMux) stop() {
 	scanning := r.scanning
 	r.scanning = false
 	r.scanGen++
+	r.advGen++
 	r.shareSink, r.findSink = nil, nil
 	r.mu.Unlock()
 
@@ -265,10 +330,14 @@ func (r *radioMux) stop() {
 	r.native.StopAdvertising()
 }
 
-// dispatchShare routes a peripheral event to the current share.
-func (r *radioMux) dispatchShare(ev event) {
+// dispatchShare routes a peripheral event to the current share, unless it
+// came from an advertisement that no longer runs.
+func (r *radioMux) dispatchShare(gen uint64, ev event) {
 	r.mu.Lock()
 	s := r.shareSink
+	if gen != r.advGen {
+		s = nil
+	}
 	r.mu.Unlock()
 
 	if s != nil {
@@ -302,15 +371,17 @@ func (r *radioMux) dispatchScan(ev event) {
 	}
 }
 
-// peripheralCallback receives the native payee-side callbacks. Every method
-// copies what it needs and enqueues; none blocks.
+// peripheralCallback receives the native payee-side callbacks of one
+// advertisement. Every method copies what it needs and enqueues; none
+// blocks.
 type peripheralCallback struct {
-	r *radioMux
+	r      *radioMux
+	advGen uint64
 }
 
 // OnCentralReady implements radio.PeripheralCallback.
 func (c *peripheralCallback) OnCentralReady(centralID string, maxChunk int) {
-	c.r.dispatchShare(event{
+	c.r.dispatchShare(c.advGen, event{
 		kind:     evCentralReady,
 		id:       centralID,
 		maxChunk: maxChunk,
@@ -319,7 +390,7 @@ func (c *peripheralCallback) OnCentralReady(centralID string, maxChunk int) {
 
 // OnWrite implements radio.PeripheralCallback.
 func (c *peripheralCallback) OnWrite(centralID string, chunk []byte) {
-	c.r.dispatchShare(event{
+	c.r.dispatchShare(c.advGen, event{
 		kind:  evWrite,
 		id:    centralID,
 		chunk: bytes.Clone(chunk),
@@ -328,12 +399,15 @@ func (c *peripheralCallback) OnWrite(centralID string, chunk []byte) {
 
 // OnCentralGone implements radio.PeripheralCallback.
 func (c *peripheralCallback) OnCentralGone(centralID string) {
-	c.r.dispatchShare(event{kind: evCentralGone, id: centralID})
+	c.r.dispatchShare(c.advGen, event{kind: evCentralGone, id: centralID})
 }
 
 // OnAdvertisingFailed implements radio.PeripheralCallback.
 func (c *peripheralCallback) OnAdvertisingFailed(reason string) {
-	c.r.dispatchShare(event{kind: evAdvertisingFailed, reason: reason})
+	c.r.dispatchShare(c.advGen, event{
+		kind:   evAdvertisingFailed,
+		reason: reason,
+	})
 }
 
 // centralCallback receives the native payer-side callbacks of one native
@@ -353,29 +427,38 @@ func (c *centralCallback) OnAdvertisement(peerID string, rssi int) {
 	})
 }
 
-// OnConnected implements radio.CentralCallback.
-func (c *centralCallback) OnConnected(peerID string, maxChunk int) {
+// OnConnected implements radio.CentralCallback. Connection events are
+// routed whatever scan they arrive through: a connection outlives the scan
+// it was found by, and its connID tells its owner apart.
+func (c *centralCallback) OnConnected(peerID string, connID int,
+	maxChunk int) {
+
 	c.r.dispatchFind(event{
 		kind:     evConnected,
 		id:       peerID,
+		connID:   connID,
 		maxChunk: maxChunk,
 	})
 }
 
 // OnNotify implements radio.CentralCallback.
-func (c *centralCallback) OnNotify(peerID string, chunk []byte) {
+func (c *centralCallback) OnNotify(peerID string, connID int, chunk []byte) {
 	c.r.dispatchFind(event{
-		kind:  evNotify,
-		id:    peerID,
-		chunk: bytes.Clone(chunk),
+		kind:   evNotify,
+		id:     peerID,
+		connID: connID,
+		chunk:  bytes.Clone(chunk),
 	})
 }
 
 // OnDisconnected implements radio.CentralCallback.
-func (c *centralCallback) OnDisconnected(peerID string, reason string) {
+func (c *centralCallback) OnDisconnected(peerID string, connID int,
+	reason string) {
+
 	c.r.dispatchFind(event{
 		kind:   evDisconnected,
 		id:     peerID,
+		connID: connID,
 		reason: reason,
 	})
 }

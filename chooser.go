@@ -117,9 +117,8 @@ func (c *chooser) run(ctx context.Context) error {
 
 // attempt connects once, sends the token and waits for the answer.
 func (c *chooser) attempt(ctx context.Context) error {
-	defer c.radio.native.Disconnect(c.peer)
-
-	err := c.radio.native.Connect(c.peer, ServiceUUID, RxUUID, TxUUID)
+	connID, err := c.radio.connect(c.peer)
+	defer c.radio.disconnect(c.peer, connID)
 	if err != nil {
 		return err
 	}
@@ -141,14 +140,17 @@ func (c *chooser) attempt(ctx context.Context) error {
 				c.radio.scanFailed(ev.scanGen)
 				continue
 			}
-			if ev.id != c.peer {
+			// Only this attempt's connection counts, not a
+			// late event of an earlier one.
+			if ev.id != c.peer || ev.connID != connID {
 				continue
 			}
 
 			switch ev.kind {
 			// Linked: send the token, then wait for the answer.
 			case evConnected:
-				if err := c.write(ev.maxChunk); err != nil {
+				err := c.write(connID, ev.maxChunk)
+				if err != nil {
 					return err
 				}
 				deadline = c.clock.TickAfter(
@@ -172,14 +174,16 @@ func (c *chooser) attempt(ctx context.Context) error {
 	}
 }
 
-// write sends the CHOSEN message in chunks of at most maxChunk.
-func (c *chooser) write(maxChunk int) error {
+// write sends the CHOSEN message on connection connID in chunks of at most
+// maxChunk.
+func (c *chooser) write(connID, maxChunk int) error {
 	chunks, err := wire.Chunk(wire.EncodeChosen(c.token), maxChunk)
 	if err != nil {
 		return err
 	}
 	for _, chunk := range chunks {
-		if err := c.radio.native.Write(c.peer, chunk); err != nil {
+		err := c.radio.write(c.peer, connID, chunk, nativeOpTimeout)
+		if err != nil {
 			return err
 		}
 	}

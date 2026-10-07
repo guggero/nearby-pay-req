@@ -199,7 +199,7 @@ func TestBusyRetry(t *testing.T) {
 
 	// The other payer leaves; once the delay passed the payee is
 	// picked again and delivers.
-	other.radio.Disconnect("payee")
+	other.disconnect("payee")
 	payee.advance(payee.params.MinSessionInterval)
 	payer.advance(payer.params.BusyRetryDelay)
 	world.Advertise()

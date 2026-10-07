@@ -41,6 +41,15 @@ const (
 // must be safe to call from any goroutine. Methods documented as blocking
 // are only ever called from one session goroutine per connection.
 //
+// Connections the radio opens as a central are identified by a connID the
+// Manager picks for every Connect. The radio stores it with the connection
+// and reports it in every callback about that connection, so a callback the
+// OS delivers late for a connection that was already closed or replaced
+// cannot be mistaken for one of its successor. Blocking calls take the time
+// they may block for, and closing the link they run on makes them fail at
+// once, so a session's deadline and cancellation reach into the native
+// stack.
+//
 // The interface only uses types gomobile can bind, so a mobile binding
 // package can declare an identical interface for Kotlin and Swift to
 // implement and hand that implementation to this package through a small
@@ -56,22 +65,29 @@ type Radio interface {
 	// advertises serviceUUID: connectable, no local name, no
 	// manufacturer data. Prepared (long) writes to rxUUID must be
 	// refused: every chunk arrives as one ATT Write Request. Calling it
-	// while already advertising replaces cb.
+	// while already advertising replaces cb. Setting up is all or
+	// nothing: when it returns an error, no part of the GATT server or
+	// advertisement may stay behind, and a stack answer arriving after a
+	// timeout must not complete a later setup.
 	StartAdvertising(serviceUUID, rxUUID, txUUID string,
 		cb PeripheralCallback) error
 
 	// StopAdvertising stops advertising, disconnects every central and
-	// closes the GATT server. Idempotent.
+	// closes the GATT server. Idempotent. A Notify blocked meanwhile
+	// fails at once, and callbacks of the closed server are never
+	// delivered through the cb of a later StartAdvertising.
 	StopAdvertising()
 
 	// Notify sends one chunk to the given central on txUUID. It blocks
 	// until the stack accepted the value (Android onNotificationSent,
-	// iOS updateValue returning true or peripheralManagerIsReady).
-	Notify(centralID string, chunk []byte) error
+	// iOS updateValue returning true or peripheralManagerIsReady), and
+	// fails once timeoutMillis passed without that.
+	Notify(centralID string, chunk []byte, timeoutMillis int) error
 
-	// DisconnectCentral drops one central. CoreBluetooth cannot force a
-	// disconnect, so on iOS the radio stops serving that central and
-	// ignores its further writes.
+	// DisconnectCentral drops one central. A Notify to it blocked
+	// meanwhile fails at once. CoreBluetooth cannot force a disconnect,
+	// so on iOS the radio stops serving that central and ignores its
+	// further writes.
 	DisconnectCentral(centralID string)
 
 	// StartScan scans for serviceUUID and reports every matching
@@ -84,18 +100,32 @@ type Radio interface {
 	// Connect connects to peerID, requests the largest MTU (Android),
 	// discovers the service, enables notifications on txUUID and then
 	// reports OnConnected. It returns immediately; failures arrive as
-	// OnDisconnected. It must also work for a peer reported earlier in
-	// the app's lifetime whose scan has since stopped, because the
-	// Manager reconnects to tell a payee its request was chosen (on iOS,
-	// keep the CBPeripheral or use retrievePeripherals(withIdentifiers:)).
-	Connect(peerID, serviceUUID, rxUUID, txUUID string) error
+	// OnDisconnected. connID identifies this connection attempt: every
+	// callback about it carries connID. A Connect to a peer that still
+	// has a connection replaces that one, whose callbacks, including any
+	// the OS delivers after the replacement, are dropped or keep
+	// carrying the old connID. It must also work for a peer reported
+	// earlier in the app's lifetime whose scan has since stopped,
+	// because the Manager reconnects to tell a payee its request was
+	// chosen (on iOS, keep the CBPeripheral or use
+	// retrievePeripherals(withIdentifiers:)).
+	Connect(peerID string, connID int, serviceUUID, rxUUID,
+		txUUID string) error
 
-	// Write writes one chunk to rxUUID with response. It blocks until
-	// the write response arrived.
-	Write(peerID string, chunk []byte) error
+	// Write writes one chunk to rxUUID with response on connection
+	// connID. It blocks until the write response arrived and fails once
+	// timeoutMillis passed without one, or at once if connID is not the
+	// peer's current connection. Only a response to this very write
+	// completes it: a late response to an earlier write that timed out
+	// does not.
+	Write(peerID string, connID int, chunk []byte,
+		timeoutMillis int) error
 
-	// Disconnect drops the connection to peerID. Idempotent.
-	Disconnect(peerID string)
+	// Disconnect drops connection connID to peerID; a Write on it
+	// blocked meanwhile fails at once. It does nothing if connID is not
+	// the peer's current connection, so closing an old connection never
+	// tears down its successor. Idempotent.
+	Disconnect(peerID string, connID int)
 
 	// SetHceActive makes the app's HCE service the preferred one while
 	// active (Android CardEmulation.setPreferredService on the
@@ -133,18 +163,20 @@ type CentralCallback interface {
 	OnAdvertisement(peerID string, rssi int)
 
 	// OnConnected fires after service discovery and notification
-	// subscription. maxChunk is the largest value Write may send in a
-	// single ATT Write Request, which is the negotiated MTU − 3 (iOS:
-	// maximumWriteValueLength(.withoutResponse)). Never a larger value
-	// the platform would send as a prepared write: payees refuse those.
-	OnConnected(peerID string, maxChunk int)
+	// subscription of connection connID. maxChunk is the largest value
+	// Write may send in a single ATT Write Request, which is the
+	// negotiated MTU − 3 (iOS: maximumWriteValueLength(.withoutResponse)).
+	// Never a larger value the platform would send as a prepared write:
+	// payees refuse those.
+	OnConnected(peerID string, connID int, maxChunk int)
 
-	// OnNotify delivers one txUUID notification, in order.
-	OnNotify(peerID string, chunk []byte)
+	// OnNotify delivers one txUUID notification of connection connID,
+	// in order.
+	OnNotify(peerID string, connID int, chunk []byte)
 
-	// OnDisconnected fires when a connection attempt failed or a
+	// OnDisconnected fires when connection attempt connID failed or the
 	// connection dropped.
-	OnDisconnected(peerID string, reason string)
+	OnDisconnected(peerID string, connID int, reason string)
 
 	// OnScanFailed reports that scanning could not start.
 	OnScanFailed(reason string)

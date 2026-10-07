@@ -210,7 +210,7 @@ func TestRateLimit(t *testing.T) {
 	r.connect(t, "payee")
 	r.runUntilCode(t, "payee")
 	nextAs[PeerConnected](t, share)
-	r.radio.Disconnect("payee")
+	r.disconnect("payee")
 	nextAs[SessionFailed](t, share)
 
 	// Immediately again: busy.
@@ -242,7 +242,7 @@ func TestSuspiciousActivity(t *testing.T) {
 		r.connect(t, "payee")
 		r.runUntilCode(t, "payee")
 		nextAs[PeerConnected](t, share)
-		r.radio.Disconnect("payee")
+		r.disconnect("payee")
 		require.Equal(
 			t,
 			FailureConnectFailed,
@@ -583,7 +583,7 @@ func TestDisconnectBeforeCodeIsNotSuspicious(t *testing.T) {
 		payee.advance(defaultMinSessionInterval)
 		r.connect(t, "payee")
 		r.openSession(t, "payee")
-		r.radio.Disconnect("payee")
+		r.disconnect("payee")
 		require.Equal(
 			t,
 			FailureConnectFailed,
@@ -598,7 +598,7 @@ func TestDisconnectBeforeCodeIsNotSuspicious(t *testing.T) {
 		r.connect(t, "payee")
 		r.runUntilCode(t, "payee")
 		nextAs[PeerConnected](t, share)
-		r.radio.Disconnect("payee")
+		r.disconnect("payee")
 		nextAs[SessionFailed](t, share)
 	}
 	warning := nextAs[SuspiciousActivity](t, share)

@@ -196,6 +196,19 @@ What implementations most often get wrong:
   before reporting `OnConnected` on Android.
 - **Reconnecting.** `Connect` must also work for a peer seen earlier whose
   scan has since stopped, because `Choose` reconnects to the payee.
+- **Connection ids.** Store the `connID` of every `Connect` with that
+  connection and report it in each of its callbacks. A callback the OS
+  delivers late for a closed or replaced connection must carry the old id
+  (or be dropped), never the new one: on Android, check that the
+  `BluetoothGatt` of a callback is the connection's current one. Ignore a
+  `Write` or `Disconnect` naming another id.
+- **Bounded blocking.** `Write` and `Notify` block for at most the
+  `timeoutMillis` they are given, only a response to that very operation
+  completes them, and `Disconnect`, `DisconnectCentral` or
+  `StopAdvertising` on the link make them fail at once.
+- **All-or-nothing setup.** A `StartAdvertising` that fails must leave no
+  service or advertisement behind, and a stack answer that arrives after
+  its timeout must not complete a later attempt.
 - **Callbacks must not block.** The Go callbacks only enqueue. Call them
   from any thread, but never while holding a lock the Go side might need
   through another radio method.

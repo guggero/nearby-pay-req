@@ -68,7 +68,7 @@ func (w *World) NewRadio(id string) *Radio {
 		status:         DefaultStatus,
 		maxChunk:       DefaultMaxChunk,
 		writeFailAfter: -1,
-		links:          make(map[string]bool),
+		links:          make(map[string]int),
 	}
 
 	w.mu.Lock()
@@ -152,8 +152,9 @@ type Radio struct {
 	// further one fails; negative means writes never fail.
 	writeFailAfter int
 
-	// links are the peers this radio is connected to as a central.
-	links map[string]bool
+	// links are the peers this radio is connected to as a central, with
+	// the connID of each connection.
+	links map[string]int
 
 	// hceActive and the call counts are observable state for tests.
 	hceActive  bool
@@ -290,21 +291,28 @@ func (r *Radio) StopAdvertising() {
 	r.mu.Unlock()
 
 	for _, c := range r.world.centralsOf(r.id) {
-		c.dropLink(r.id, "peripheral stopped")
+		if connID, ok := c.linkTo(r.id); ok {
+			c.dropLink(r.id, connID, "peripheral stopped")
+		}
 	}
 }
 
-// Notify implements radio.Radio.
-func (r *Radio) Notify(centralID string, chunk []byte) error {
+// Notify implements radio.Radio. The fake delivers at once, so the timeout
+// never matters.
+func (r *Radio) Notify(centralID string, chunk []byte, _ int) error {
 	c := r.world.radio(centralID)
-	if c == nil || !c.linked(r.id) {
+	if c == nil {
+		return ErrNotConnected
+	}
+	connID, ok := c.linkTo(r.id)
+	if !ok {
 		return ErrNotConnected
 	}
 	if err := checkChunk(chunk, c.chunkLimit(r)); err != nil {
 		return err
 	}
 	if cb := c.scanCallback(); cb != nil {
-		cb.OnNotify(r.id, bytes.Clone(chunk))
+		cb.OnNotify(r.id, connID, bytes.Clone(chunk))
 	}
 
 	return nil
@@ -312,8 +320,12 @@ func (r *Radio) Notify(centralID string, chunk []byte) error {
 
 // DisconnectCentral implements radio.Radio.
 func (r *Radio) DisconnectCentral(centralID string) {
-	if c := r.world.radio(centralID); c != nil {
-		c.dropLink(r.id, "peripheral disconnected")
+	c := r.world.radio(centralID)
+	if c == nil {
+		return
+	}
+	if connID, ok := c.linkTo(r.id); ok {
+		c.dropLink(r.id, connID, "peripheral disconnected")
 	}
 }
 
@@ -336,9 +348,14 @@ func (r *Radio) StopScan() {
 	r.mu.Unlock()
 }
 
-// Connect implements radio.Radio: the link is up at
-// once and both sides learn the chunk size.
-func (r *Radio) Connect(peerID, _, _, _ string) error {
+// Connect implements radio.Radio: the link is up at once and both sides
+// learn the chunk size. A connection to the same peer is replaced, and
+// reports its end with its own connID.
+func (r *Radio) Connect(peerID string, connID int, _, _, _ string) error {
+	if old, ok := r.linkTo(peerID); ok {
+		r.dropLink(peerID, old, "replaced")
+	}
+
 	r.mu.Lock()
 	cb := r.centralCB
 	fail := r.failNext
@@ -352,27 +369,28 @@ func (r *Radio) Connect(peerID, _, _, _ string) error {
 	}
 	if fail || periphCB == nil {
 		if cb != nil {
-			cb.OnDisconnected(peerID, "connect failed")
+			cb.OnDisconnected(peerID, connID, "connect failed")
 		}
 		return nil
 	}
 
 	r.mu.Lock()
-	r.links[peerID] = true
+	r.links[peerID] = connID
 	r.mu.Unlock()
 
 	limit := r.chunkLimit(p)
 	periphCB.OnCentralReady(r.id, limit)
 	if cb != nil {
-		cb.OnConnected(peerID, limit)
+		cb.OnConnected(peerID, connID, limit)
 	}
 
 	return nil
 }
 
-// Write implements radio.Radio.
-func (r *Radio) Write(peerID string, chunk []byte) error {
-	if !r.linked(peerID) {
+// Write implements radio.Radio. The fake delivers at once, so the timeout
+// never matters.
+func (r *Radio) Write(peerID string, connID int, chunk []byte, _ int) error {
+	if current, ok := r.linkTo(peerID); !ok || current != connID {
 		return ErrNotConnected
 	}
 	if r.writeFails() {
@@ -390,8 +408,8 @@ func (r *Radio) Write(peerID string, chunk []byte) error {
 }
 
 // Disconnect implements radio.Radio.
-func (r *Radio) Disconnect(peerID string) {
-	r.dropLink(peerID, "central disconnected")
+func (r *Radio) Disconnect(peerID string, connID int) {
+	r.dropLink(peerID, connID, "central disconnected")
 }
 
 // SetHceActive implements radio.Radio.
@@ -402,20 +420,26 @@ func (r *Radio) SetHceActive(active bool) {
 	r.hceActive = active
 }
 
-// linked reports whether this radio, as a central, is connected to peerID.
-func (r *Radio) linked(peerID string) bool {
+// linkTo returns the connID of this radio's connection, as a central, to
+// peerID.
+func (r *Radio) linkTo(peerID string) (int, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	return r.links[peerID]
+	connID, ok := r.links[peerID]
+
+	return connID, ok
 }
 
-// dropLink tears down the link from this central to peerID and tells both
-// sides, once.
-func (r *Radio) dropLink(peerID, reason string) {
+// dropLink tears down connection connID from this central to peerID and
+// tells both sides, once. Another connection to peerID is left alone.
+func (r *Radio) dropLink(peerID string, connID int, reason string) {
 	r.mu.Lock()
-	wasLinked := r.links[peerID]
-	delete(r.links, peerID)
+	current, ok := r.links[peerID]
+	wasLinked := ok && current == connID
+	if wasLinked {
+		delete(r.links, peerID)
+	}
 	cb := r.centralCB
 	r.mu.Unlock()
 
@@ -423,7 +447,7 @@ func (r *Radio) dropLink(peerID, reason string) {
 		return
 	}
 	if cb != nil {
-		cb.OnDisconnected(peerID, reason)
+		cb.OnDisconnected(peerID, connID, reason)
 	}
 	if p := r.world.radio(peerID); p != nil {
 		if pcb := p.advertisingCallback(); pcb != nil {
@@ -454,7 +478,7 @@ func (w *World) centralsOf(id string) []*Radio {
 
 	var out []*Radio
 	for _, r := range w.radios {
-		if r.linked(id) {
+		if _, ok := r.linkTo(id); ok {
 			out = append(out, r)
 		}
 	}

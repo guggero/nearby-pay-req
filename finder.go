@@ -25,6 +25,7 @@ type candidate struct {
 // payerRun is the one session the payer runs at a time.
 type payerRun struct {
 	peer      string
+	connID    int
 	sess      *session.PayerSession
 	maxChunk  int
 	reasm     wire.Reassembler
@@ -179,7 +180,7 @@ func (f *finder) stopScan(radioLost bool) {
 		return
 	}
 	if f.active != nil {
-		f.radio.native.Disconnect(f.active.peer)
+		f.radio.disconnect(f.active.peer, f.active.connID)
 		f.active = nil
 	}
 	if radioLost {
@@ -218,9 +219,7 @@ func (f *finder) handleEvent(ev event) (bool, error) {
 
 	// Connected and subscribed: open the session.
 	case evConnected:
-		if f.active == nil || f.active.peer != ev.id ||
-			f.active.connected {
-
+		if !f.ownConnection(ev) || f.active.connected {
 			return false, nil
 		}
 
@@ -228,7 +227,7 @@ func (f *finder) handleEvent(ev event) (bool, error) {
 
 	// A chunk from the sharer.
 	case evNotify:
-		if f.active == nil || f.active.peer != ev.id {
+		if !f.ownConnection(ev) {
 			return false, nil
 		}
 
@@ -236,7 +235,7 @@ func (f *finder) handleEvent(ev event) (bool, error) {
 
 	// The link went away before we were done.
 	case evDisconnected:
-		if f.active == nil || f.active.peer != ev.id {
+		if !f.ownConnection(ev) {
 			return false, nil
 		}
 		log.Debugf("Nearby sharer %s disconnected: %s", ev.id,
@@ -263,6 +262,14 @@ func (f *finder) handleEvent(ev event) (bool, error) {
 	default:
 		return false, nil
 	}
+}
+
+// ownConnection reports whether a connection event belongs to the active
+// session's connection, rather than to an earlier connection to the same
+// sharer whose callbacks arrive late.
+func (f *finder) ownConnection(ev event) bool {
+	return f.active != nil && f.active.peer == ev.id &&
+		f.active.connID == ev.connID
 }
 
 // pick connects to the strongest sharer, or reports that all are too far.
@@ -306,7 +313,8 @@ func (f *finder) pick() error {
 		return err
 	}
 
-	err := f.radio.native.Connect(best, ServiceUUID, RxUUID, TxUUID)
+	connID, err := f.radio.connect(best)
+	f.active.connID = connID
 	if err != nil {
 		log.Debugf("Connecting to %s failed: %v", best, err)
 		return f.failActive(
@@ -412,7 +420,7 @@ func (f *finder) handleNotify(chunk []byte) (bool, error) {
 	f.writeAll(accept.Send)
 
 	peer := f.active.peer
-	f.radio.native.Disconnect(peer)
+	f.radio.disconnect(peer, f.active.connID)
 	f.active = nil
 
 	var token []byte
@@ -462,10 +470,10 @@ func (f *finder) failActive(reason FailureReason) error {
 	if f.active == nil {
 		return nil
 	}
-	peer := f.active.peer
+	peer, connID := f.active.peer, f.active.connID
 	f.active = nil
 	delete(f.candidates, peer)
-	f.radio.native.Disconnect(peer)
+	f.radio.disconnect(peer, connID)
 
 	if reason == FailurePeerBusy &&
 		f.busyRetries[peer] < f.params.MaxBusyRetries {
@@ -506,7 +514,10 @@ func (f *finder) write(msg []byte) bool {
 		return false
 	}
 	for _, c := range chunks {
-		if err := f.radio.native.Write(f.active.peer, c); err != nil {
+		err := f.radio.write(
+			f.active.peer, f.active.connID, c, nativeOpTimeout,
+		)
+		if err != nil {
 			log.Debugf("Write to %s failed: %v", f.active.peer, err)
 			return false
 		}
