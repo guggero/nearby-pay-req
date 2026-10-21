@@ -2,16 +2,18 @@
 // Payment Request Exchange bLIP. It implements the exchange from the
 // specification text alone, using flynn/noise only for the Noise NN
 // handshake; TLV, framing, commitment, code and chunking are written out
-// by hand so they can be checked against the document.
+// by hand so they can be checked against the document. The code's word list
+// is its own copy of the BIP 39 English list, checked against the published
+// file's hash.
 package main
 
 import (
 	"bytes"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"os"
 	"strings"
 
@@ -20,7 +22,29 @@ import (
 
 var (
 	serviceUUID = mustHex("7be78411b15148bfa570252b55847970")
+
+	//go:embed bip39-english.txt
+	bip39English string
+
+	// bip39EnglishSHA256 is the SHA-256 of english.txt as published with
+	// BIP 39.
+	bip39EnglishSHA256 = "2f5eed53a4727b4bf8880d8f3f199efc90e58503" +
+		"646d9ff8eff3a2ed3b24dbda"
 )
+
+// words returns the BIP 39 English word list, after checking it is the
+// published one.
+func words() []string {
+	sum := sha256.Sum256([]byte(bip39English))
+	if hex.EncodeToString(sum[:]) != bip39EnglishSHA256 {
+		panic("bip39-english.txt is not the published BIP 39 list")
+	}
+	w := strings.Split(strings.TrimSuffix(bip39English, "\n"), "\n")
+	if len(w) != 2048 {
+		panic("BIP 39 word list does not have 2048 words")
+	}
+	return w
+}
 
 func mustHex(s string) []byte {
 	b, err := hex.DecodeString(s)
@@ -117,6 +141,7 @@ type vector struct {
 	Commitment    string `json:"commitment"`
 	HandshakeHash string `json:"handshake_hash"`
 	Code          string `json:"code"`
+	CodeIndices   []int  `json:"code_word_indices"`
 
 	Msg1 string `json:"msg1_noise_e"`
 	Msg2 string `json:"msg2_noise_e_ee"`
@@ -131,8 +156,8 @@ type vector struct {
 	RevealChunks map[int][]string `json:"msg4_chunks"`
 }
 
-func run(tg tags, name, req string, ePayer, ePayee, na, nb []byte,
-	chunkSizes []int) vector {
+func run(tg tags, wordList []string, name, req string, ePayer, ePayee, na,
+	nb []byte, chunkSizes []int) vector {
 
 	prologue := append([]byte(tg.prologue), serviceUUID...)
 	cs := noise.NewCipherSuite(
@@ -191,9 +216,11 @@ func run(tg tags, name, req string, ePayer, ePayee, na, nb []byte,
 	hc.Write(h)
 	hc.Write(na)
 	hc.Write(nb)
-	code := fmt.Sprintf("%06d", binary.BigEndian.Uint32(hc.Sum(
-		nil,
-	))%1_000_000)
+
+	// The first 22 bits of the digest, as two 11-bit word indices.
+	bits := binary.BigEndian.Uint32(hc.Sum(nil)) >> 10
+	indices := []int{int(bits >> 11), int(bits & 0x7ff)}
+	code := wordList[indices[0]] + " " + wordList[indices[1]]
 
 	// The chosen token: same inputs as the code, its own tag.
 	ht := sha256.New()
@@ -214,6 +241,7 @@ func run(tg tags, name, req string, ePayer, ePayee, na, nb []byte,
 		Commitment:         hex.EncodeToString(ch[:]),
 		HandshakeHash:      hex.EncodeToString(h),
 		Code:               code,
+		CodeIndices:        indices,
 		Msg1:               hex.EncodeToString(msg(0x01, m1)),
 		Msg2:               hex.EncodeToString(msg(0x02, m2)),
 		Msg3:               hex.EncodeToString(msg(0x03, c3)),
@@ -280,6 +308,7 @@ func main() {
 		"nearby-payreq/1", "nearby-payreq/1/commit",
 		"nearby-payreq/1/code", "nearby-payreq/1/chosen",
 	}
+	wordList := words()
 	var out []vector
 	all := append(
 		[]input{{"inline-short", "payer-0", "payee-0",
@@ -288,7 +317,7 @@ func main() {
 	for _, in := range all {
 		ePayer, na, nb, ePayee := keys(in)
 		out = append(out, run(
-			t, in.name, in.req, ePayer, ePayee, na, nb,
+			t, wordList, in.name, in.req, ePayer, ePayee, na, nb,
 			[]int{20, 182, 512},
 		))
 	}

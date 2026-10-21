@@ -7,9 +7,9 @@ have to point a camera at a QR code.
 The payee wallet keeps showing its receive screen. The payer wallet opens its
 send screen, finds the payee nearby and receives the exact string the QR code
 encodes (a `lightning:` URI, a BIP 21 URI, a BOLT 11 invoice, a BOLT 12
-offer, …). Both screens then show the same six-digit code, and the payer
-confirms the codes match before paying. There is no pairing, no account, no
-long-term key and no OS prompt.
+offer, …). Both screens then show the same code of two words from the BIP 39
+English word list, and the payer confirms the codes match before paying.
+There is no pairing, no account, no long-term key and no OS prompt.
 
 The protocol is written up as a bLIP draft in [`spec/`](spec/). This library
 is its reference implementation, and its tests reproduce the draft's test
@@ -32,10 +32,10 @@ vectors byte for byte.
   Both sides derive the code from the handshake hash and both nonces. The
   payee commits to its nonce before it learns the payer's, so a man in the
   middle cannot grind for a matching code offline: each pair of sessions
-  matches with probability 10⁻⁶. Repeating sessions is bounded too: the
+  matches with probability 2⁻²². Repeating sessions is bounded too: the
   payee counts every session that shows a code (6 per minute, 50 per
   shared request) and a payer holds at most 4 requests for confirmation at
-  a time, which keeps an attacker's chance below 0.02 % per shared
+  a time, which keeps an attacker's chance below 0.005 % per shared
   request.
 - **NFC carrier (Android payees).** The same string is served as a read-only
   NFC Forum Type 4 Tag holding one NDEF URI record. Any NFC reader, wallet or

@@ -3,6 +3,7 @@ package nearby
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -88,7 +89,7 @@ func TestShareFind(t *testing.T) {
 
 	require.Equal(t, request, received.PaymentRequest)
 	require.Equal(t, "payee", received.PeerID)
-	require.Len(t, received.Code, 6)
+	require.Len(t, strings.Fields(received.Code), 2)
 
 	// The payee showed the same code, then saw the acknowledgement.
 	require.Equal(

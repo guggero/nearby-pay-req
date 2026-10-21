@@ -7,16 +7,16 @@
 // Manager in the root package owns I/O and timeouts.
 //
 // The exchange is Noise_NN_25519_ChaChaPoly_SHA256 followed by a
-// commit/reveal of two nonces, from which both sides derive a six-digit
-// code. NN alone authenticates nobody (neither phone knows a key of the
-// other in advance); the code, compared by a human, is the authentication,
-// and the commitment ordering is what stops a man in the middle from
-// grinding for a matching code. See spec/ for the full rationale.
+// commit/reveal of two nonces, from which both sides derive a code of two
+// words from the BIP 39 English word list. NN alone authenticates nobody
+// (neither phone knows a key of the other in advance); the code, compared by
+// a human, is the authentication, and the commitment ordering is what stops
+// a man in the middle from grinding for a matching code. See spec/ for the
+// full rationale.
 package session
 
 import (
 	"crypto/sha256"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -35,9 +35,6 @@ const (
 
 	// nonceLen is the size of the commit/reveal nonces Na and Nb.
 	nonceLen = 32
-
-	// codeModulus turns the code hash into six decimal digits.
-	codeModulus = 1_000_000
 
 	// ackReceived is the ack status for a request the payer could parse.
 	ackReceived uint8 = 0
@@ -237,9 +234,8 @@ func commitment(nb [nonceLen]byte) [sha256.Size]byte {
 	return c
 }
 
-// comparisonCode derives the six-digit code both screens show from the
-// handshake hash and both nonces. The modulo bias over a 32-bit value is
-// below 0.03 % and irrelevant at this code length.
+// comparisonCode derives the two-word code both screens show from the
+// handshake hash and both nonces.
 func comparisonCode(handshakeHash []byte, na,
 	nb [nonceLen]byte) string {
 
@@ -248,9 +244,8 @@ func comparisonCode(handshakeHash []byte, na,
 	h.Write(handshakeHash)
 	h.Write(na[:])
 	h.Write(nb[:])
-	sum := h.Sum(nil)
 
-	return fmt.Sprintf("%06d", binary.BigEndian.Uint32(sum)%codeModulus)
+	return codeFromDigest(h.Sum(nil))
 }
 
 // chosenToken derives the token that identifies a delivered session in a

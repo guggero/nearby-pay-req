@@ -138,7 +138,7 @@ func runExchange(t *testing.T, payer *PayerSession,
 }
 
 // TestExchange runs complete exchanges with real randomness: both sides
-// derive the same six-digit code and the payer receives the request
+// derive the same two-word code and the payer receives the request
 // unchanged.
 func TestExchange(t *testing.T) {
 	t.Parallel()
@@ -160,7 +160,7 @@ func TestExchange(t *testing.T) {
 		require.NoError(t, err)
 
 		tr := runExchange(t, payer, payee)
-		require.Len(t, tr.payerCode, 6)
+		requireCode(t, tr.payerCode)
 		require.Equal(t, tr.payeeCode, tr.payerCode)
 		require.Equal(t, request, tr.received)
 

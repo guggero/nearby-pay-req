@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/guggero/nearby-pay-req/wire"
@@ -34,6 +35,7 @@ type specVector struct {
 	Commitment    string `json:"commitment"`
 	HandshakeHash string `json:"handshake_hash"`
 	Code          string `json:"code"`
+	CodeIndices   []int  `json:"code_word_indices"`
 
 	Msg1 string `json:"msg1_noise_e"`
 	Msg2 string `json:"msg2_noise_e_ee"`
@@ -138,6 +140,14 @@ func TestSpecVectors(t *testing.T) {
 			require.Equal(t, v.Code, comparisonCode(
 				unhex(t, v.HandshakeHash), na, nb,
 			))
+
+			// The code's words are the listed entries of the
+			// word list.
+			words := make([]string, len(v.CodeIndices))
+			for i, idx := range v.CodeIndices {
+				words[i] = wordList[idx]
+			}
+			require.Equal(t, v.Code, strings.Join(words, " "))
 
 			for size, want := range v.Msg4Chunks {
 				n, err := strconv.Atoi(size)

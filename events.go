@@ -266,7 +266,8 @@ type Received struct {
 	// code would carry it.
 	PaymentRequest string
 
-	// Code is the six-digit comparison code.
+	// Code is the comparison code: two words of the BIP 39 English
+	// word list, joined by one space.
 	Code string
 
 	// PeerID is the radio's id of the sharer. Passing it in

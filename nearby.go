@@ -2,7 +2,7 @@
 // by the Nearby Payment Request Exchange draft in spec/. A payee on a
 // receive screen serves the string its QR code shows over Bluetooth LE and,
 // on Android, as an emulated NFC tag; a payer on the send screen finds it,
-// both users compare a six-digit code, and the payer's wallet takes the
+// both users compare a two-word code, and the payer's wallet takes the
 // request as if it had scanned the QR code.
 //
 // The Manager is the entry point. It drives the platform's radio through the

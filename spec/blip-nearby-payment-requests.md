@@ -22,10 +22,10 @@ Two carriers are defined:
 * **Bluetooth Low Energy (BLE).** The payee runs a GATT server on a fixed
   service UUID. A payer connects and runs a five-message exchange: a
   `Noise_NN_25519_ChaChaPoly_SHA256` handshake followed by a commit/reveal of
-  two nonces. Both wallets then display the same six-digit *comparison code*,
-  and the payer's user confirms the codes match before paying. This
-  authenticates the request against a nearby attacker without pairing,
-  without long-term keys and without any OS prompt.
+  two nonces. Both wallets then display the same *comparison code*, two
+  words of the BIP 39 English word list, and the payer's user confirms the
+  codes match before paying. This authenticates the request against a nearby
+  attacker without pairing, without long-term keys and without any OS prompt.
 * **NFC.** A payee whose platform supports host card emulation serves the
   same string as a read-only NFC Forum Type 4 Tag holding one NDEF URI record.
   The physical tap is the authentication.
@@ -332,7 +332,12 @@ PROLOGUE     = "nearby-payreq/1" ‖ SERVICE_UUID            (ASCII, 15 + 16 byt
 COMMIT_TAG   = "nearby-payreq/1/commit"                    (ASCII)
 CODE_TAG     = "nearby-payreq/1/code"                      (ASCII)
 CHOSEN_TAG   = "nearby-payreq/1/chosen"                    (ASCII)
+WORDS        = the BIP 39 English word list                (2048 words, indexed from 0)
 ```
+
+`WORDS` is the [English list of BIP 39][bip39english], whose file has the
+SHA-256 digest
+`2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda`.
 
 #### Noise
 
@@ -362,9 +367,14 @@ cryptographically secure random number generator for every session.
 
 ```
 C    = SHA-256(COMMIT_TAG ‖ Nb)
-code = BE-uint32(SHA-256(CODE_TAG ‖ h ‖ Na ‖ Nb)[0..4]) mod 1000000,
-       written as six decimal digits with leading zeros
+d    = SHA-256(CODE_TAG ‖ h ‖ Na ‖ Nb)
+i    = BE-uint32(d[0..4]) >> 10                (the first 22 bits of d)
+code = WORDS[i >> 11] ‖ " " ‖ WORDS[i & 2047]
 ```
+
+The first 11 bits of `d` select the first word and the next 11 bits the
+second, the way a BIP 39 mnemonic maps entropy to words. `code` is the two
+words in that order, in lower case, joined by one ASCII space.
 
 ### Session flow
 
@@ -457,10 +467,15 @@ The payer:
   - SHOULD, if the user dismisses the confirmation without answering,
     discard the request and search again, without excluding that payee.
 
-Both wallets SHOULD present the code in two groups of three digits
-(`315 835`) and in a monospaced or tabular font. Each wallet SHOULD tell its
-user what the code is for in plain words: the payer's user pays only if the
-two codes are the same.
+Both wallets MUST take the words from `WORDS`, the English list, whatever
+language their user interface uses, so that both screens show the same
+words. They SHOULD present the code as its two words in order, in lower case
+and separated by a space (`toast hobby`), large enough to read at arm's
+length. Each wallet SHOULD tell its user what the code is for in plain
+words: the payer's user pays only if the two codes are the same. Because
+most wallets use the same list for recovery phrases, a wallet SHOULD make
+clear that the words are a one-time comparison code and no part of a
+recovery phrase.
 
 #### Choosing a request
 
@@ -747,7 +762,7 @@ authentication.
 
 A code derived from `h` alone would be weak: a man in the middle chooses its
 own ephemerals and can grind them until the codes of its two sessions
-collide, which takes about 2²⁰ attempts for a six-digit code. The
+collide, which takes about 2²² attempts for a two-word code. The
 commit/reveal step removes that freedom. This is the construction behind
 Bluetooth LE Secure Connections numeric comparison, analysed as SAS-based
 authenticated key agreement by Vaudenay:
@@ -759,20 +774,21 @@ authenticated key agreement by Vaudenay:
   uniformly random to it as well.
 
 Each pairing of one payer session with one payee session therefore
-matches with probability 10⁻⁶, and no offline work improves on that. What
-remains is repetition: an attacker completes its own sessions with the
-payer (posing as payees) and with the genuine payee (posing as a payer),
-and wins when the genuine payee displays a code equal to one the payer's
-user will accept for an attacker request. With `K` such codes acceptable
-at once and `M` payee sessions that reach their code, the chance is about
+matches with probability 2⁻²² (about 1 in 4.2 million), and no offline work
+improves on that. What remains is repetition: an attacker completes its own
+sessions with the payer (posing as payees) and with the genuine payee
+(posing as a payer), and wins when the genuine payee displays a code equal
+to one the payer's user will accept for an attacker request. With `K` such
+codes acceptable at once and `M` payee sessions that reach their code, the
+chance is about
 
 ```
-P = 1 − (1 − K / 1,000,000)^M  ≈  K · M / 1,000,000
+P = 1 − (1 − K / 2²²)^M  ≈  K · M / 2²²
 ```
 
-(treating the six-digit reduction as uniform; its modulo bias does not
-change the result). The protocol bounds both factors instead of relying on
-the attacker's patience:
+(the code takes whole bits of a hash, so every one of the 2²² codes is
+equally likely). The protocol bounds both factors instead of relying on the
+attacker's patience:
 
 * `K` is the number of requests a payer holds for confirmation: at most 4
   at a time across searches, each only for the comparison timeout. A payer
@@ -781,8 +797,8 @@ the attacker's patience:
   counted whatever their outcome, because an attacker would acknowledge
   every attempt; at most 6 per minute and 50 per shared request.
 
-So against one shared request, `P` stays below 4 · 50 / 10⁶ = 0.02 %
-(0.005 % for a payer that does not collect), however long the attacker
+So against one shared request, `P` stays below 4 · 50 / 2²² ≈ 0.005 %
+(0.0012 % for a payer that does not collect), however long the attacker
 tries, and changing BLE identities changes neither bound. Matching codes
 alone are not enough either: the user must also pick the attacker's
 request. These figures are for the RECOMMENDED parameters; an application
@@ -790,8 +806,23 @@ that raises the limits raises the bound accordingly. The construction
 itself has not been formally analysed beyond the SAS literature cited
 above; review of the multi-session argument is welcome.
 
-Six digits match Bluetooth numeric comparison and are easy to compare at a
-glance.
+### Two words of the BIP 39 list
+
+The code is two words rather than the six digits of Bluetooth numeric
+comparison. Two words of a 2048-word list carry 22 bits, against about 19.9
+bits for six digits, so under the same limits each pairing of sessions is
+about four times less likely to match, while the code stays short enough to
+compare at a glance and to read out. [ZRTP][zrtp] renders its short
+authentication string as words for the same reason, as two words of the PGP
+word list (16 bits).
+
+The BIP 39 English list was built to be read by people: every word is
+identified by its first four letters, and similar words such as "build" and
+"built" were left out. Almost every Bitcoin wallet already ships it, so the
+code needs no new list. Only the English list is used, because both screens
+must show the same words whatever language each wallet's user interface
+uses. The price of reusing it is that users know these words from recovery
+phrases, which is why wallets should label the code as what it is.
 
 ### No static keys
 
@@ -831,8 +862,8 @@ distinguishable groups.
 |---|---|---|
 | A nearby attacker advertises the service and serves its own payment request, possibly copying the real amount and description | The comparison code. "Codes differ" excludes that payee | A user who never compares the codes is not protected. Wallets should make the comparison an explicit step, not a passive banner. NFC and QR are unaffected. |
 | Identity of the peer | none: Noise NN only protects the channel against passive listeners | The human comparison of the code is what authenticates the exchange the user picked |
-| Active man in the middle relaying between both devices | The commitment ordering caps success at 10⁻⁶ per pair of sessions | See the next row |
-| Grinding: repeated sessions until the payee shows a code the payer's user accepts | The payer holds at most 4 requests for confirmation, each for 20 s; the payee counts every session that reaches its code, at most 6 per minute and 50 per shared request; the warning | Below 0.02 % per shared request with the RECOMMENDED parameters (see [Rationale](#noise-nn-with-a-commitreveal-comparison-code)); the warning is a heuristic with false positives in busy rooms |
+| Active man in the middle relaying between both devices | The commitment ordering caps success at 2⁻²² per pair of sessions | See the next row |
+| Grinding: repeated sessions until the payee shows a code the payer's user accepts | The payer holds at most 4 requests for confirmation, each for 20 s; the payee counts every session that reaches its code, at most 6 per minute and 50 per shared request; the warning | Below 0.005 % per shared request with the RECOMMENDED parameters (see [Rationale](#noise-nn-with-a-commitreveal-comparison-code)); the warning is a heuristic with false positives in busy rooms |
 | A second payer replacing the code the first payer's user compares | The payee holds a delivered code for the comparison timeout and answers other payers `BUSY` | A held payee answers other payers `BUSY` for up to 20 s; an attacker can renew holds only within the code-attempt limits |
 | Replay of an earlier session | Fresh ephemerals and nonces in every session; the code depends on both | none |
 | Passive eavesdropping on the payment request (amount, node id, address) | ChaCha20-Poly1305 from message 2 onwards | The advertisement itself reveals that a payment request is being displayed nearby. Any nearby party can run its own payer session and read the request: encryption does not restrict who the audience is, exactly as anyone can photograph a displayed QR code |
@@ -898,7 +929,8 @@ Future changes are accommodated as follows:
 
 The `gen/` directory next to this document holds an independent generator for
 the test vectors below. It implements the TLV, framing, commitment, code and
-chunking from this text and uses a Noise library only for the NN handshake.
+chunking from this text, with its own copy of the BIP 39 English word list,
+and uses a Noise library only for the NN handshake.
 
 ## Test Vectors
 
@@ -925,7 +957,7 @@ payer ephemeral pubkey  = fbcb4292b67b6b1f3ab65f66f5a98c9fddd137e128c5484d124ec0
 payee ephemeral pubkey  = 0dc73519d59fce9ea4c41aac7ead51892ad26203c3d1c5f97e62f99be0d93235
 C                       = 002f25f185171dc6801d15f4c59615092e09802699c6318c5122e1c56af27c09
 h                       = 474cc501a595d09569ece7d74a261ee130384d8427e45aa8842b2905a0545779
-code                    = 315835
+code                    = "toast hobby"   (word indices 1816, 866)
 chosen_token            = 6a0a51f15e5026bf4f99bcb7d4026869e8e86bb01714d6bb79a48b1940616388
 ```
 
@@ -989,8 +1021,9 @@ ABORT(UNKNOWN_SESSION)                    017f0007
 ### More vectors
 
 [`vectors.json`](vectors.json) holds the exchange above plus five more, with
-every message, the chunking of message 4 at chunk sizes 20, 182 and 512, and
-the `chosen_token` with its `CHOSEN` messages:
+every message, the code with its word indices, the chunking of message 4 at
+chunk sizes 20, 182 and 512, and the `chosen_token` with its `CHOSEN`
+messages:
 
 | Name | Payload | Payload bytes | Message 4 bytes |
 |---|---|---|---|
@@ -1002,6 +1035,8 @@ the `chosen_token` with its `CHOSEN` messages:
 | `bolt12-offer` | bare BOLT 12 offer | 204 | 258 |
 
 [bcp14]: https://www.rfc-editor.org/info/bcp14
+[bip39english]: https://github.com/bitcoin/bips/blob/master/bip-0039/english.txt
+[zrtp]: https://www.rfc-editor.org/rfc/rfc6189#section-5.1.6
 [bolt1]: https://github.com/lightning/bolts/blob/master/01-messaging.md#type-length-value-format
 [noise]: https://noiseprotocol.org/noise.html
 [t4t]: https://nfc-forum.org/build/specifications
