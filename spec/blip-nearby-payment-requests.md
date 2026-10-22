@@ -15,7 +15,7 @@ without the payer pointing a camera at a QR code.
 
 The payload is opaque: it is exactly the string the payee's QR code would
 encode, such as a `lightning:` URI, a BIP 21 URI, a bare BOLT 11 invoice or a
-BOLT 12 offer. The payer treats it exactly as if it had scanned it.
+BOLT 12 offer. The payer treats it as if it had scanned it.
 
 Two carriers are defined:
 
@@ -65,7 +65,7 @@ identifier, the advertisement also reveals which app is in use.
 Phones can already move a few kilobytes reliably between them over BLE GATT,
 and many Android phones can emulate NFC tags. What is missing is an agreed
 wire format and an agreed authentication step. This bLIP provides both,
-keeping the payload exactly as opaque as a QR code, so a wallet can add the
+keeping the payload as opaque as a QR code, so a wallet can add the
 feature without a new parsing surface and support new payment formats on
 the same day it supports them in its QR scanner.
 
@@ -449,7 +449,7 @@ The payee:
     RECOMMENDED) or that session's payer sent `CHOSEN`, whichever comes
     first. Otherwise a second payer's session would replace the code the
     first payer's user is still comparing. The hold MUST end at the
-    timeout whatever happens, so a session never reserves the payee
+    timeout in every case, so a session never reserves the payee
     longer.
   - SHOULD stop displaying a code once its session failed, and once the
     hold of its comparison ended. The payer's user may not confirm the
@@ -524,9 +524,8 @@ The payer:
   - SHOULD, if the user dismisses the confirmation without answering,
     discard the request and search again, without excluding that payee.
 
-Both wallets MUST take the words from `WORDS`, the English list, whatever
-language their user interface uses, so that both screens show the same
-words. They SHOULD present the code as its two words in order, in lower case
+Both wallets MUST take the words from `WORDS`, the English list, in every
+user-interface language, so that both screens show the same words. They SHOULD present the code as its two words in order, in lower case
 and separated by a space (`toast hobby`), large enough to read at arm's
 length. Each wallet SHOULD tell its user what the code is for in plain
 words: the payer's user pays only if the two codes are the same. Because
@@ -631,7 +630,7 @@ A payer receiving `ABORT(BUSY)` in answer to message 1 SHOULD move on to
 the next candidate payee and SHOULD retry the same payee after a delay
 (2 seconds is RECOMMENDED), a limited number of times (12 is RECOMMENDED,
 so the retries outlast a held comparison). With several payers in one room
-this is what lets each of them get the request in turn. A `BUSY` later in
+this lets each of them get the request. A `BUSY` later in
 a session is a failed session (see [Session flow](#session-flow)). A payer
 receiving
 `ABORT(VERSION_UNSUPPORTED)` MAY open a new session using the indicated
@@ -642,7 +641,7 @@ version if it supports that version.
 The numeric values this document RECOMMENDS are starting points for two
 phones held close together. Radio conditions vary widely between devices
 and rooms, so implementations MAY tune every one of them to their
-environment, and SHOULD let applications do so. In one place:
+environment, and SHOULD let applications do so. In one table:
 
 | Parameter | Recommended | Where |
 |---|---|---|
@@ -694,7 +693,7 @@ The payee:
     command reaches it.
   - SHOULD serve the tag only while the device is unlocked.
   - MAY report to its user that the request was read once a reader has read
-    every byte of the NDEF file, in whatever order. A read of only part of
+    every byte of the NDEF file, in any order. A read of only part of
     the file, or at its end, is not a read of the request.
 
 A payer that reads an NDEF URI record from a tag MUST process it as described
@@ -719,13 +718,13 @@ would have to reject it and search again. Collecting the requests in range
 and letting the user pick by code avoids that. It does weaken the code in
 one respect: every collected request is a code the user may accept, so an
 attacker who served several of them only needs the genuine payee to show
-any one of those codes. That is why a payer may hold only a few requests
+any one of those codes. So a payer may hold only a few requests
 for confirmation at a time, each for a limited time, across searches (see
 [the grinding bound](#noise-nn-with-a-commitreveal-comparison-code)).
 
-A payee that keeps sharing after a delivery is what lets the second payer
-in the room get the same request; `CHOSEN` is what lets it stop once the
-right payer has it. Meanwhile the payee holds the delivered code on screen
+A payee keeps sharing after a delivery so that the second payer in the
+room can get the same request, and stops on `CHOSEN` once the right payer
+has it. Meanwhile the payee holds the delivered code on screen
 and turns other payers away as busy, so a second payer cannot silently
 replace the code the first payer's user is comparing; the hold ends with
 that payer's `CHOSEN` or after the comparison timeout, and busy payers
@@ -782,7 +781,7 @@ against a nearby attacker without certificates. The closest work:
 
 ### An opaque payload
 
-The transport carries exactly what the QR code would carry. The payer
+The transport carries the QR code's string unchanged. The payer
 therefore gains no new parsing surface, existing validation (network,
 amount, expiry) applies unchanged, and a new payment format becomes
 transferable the day a wallet supports it in its QR scanner. Defining a
@@ -867,10 +866,10 @@ attacker's patience:
   at a time across searches, each only for the comparison timeout. A payer
   that does not collect has `K` = 1.
 * `M` is the number of payee sessions that reach their code. They are
-  counted whatever their outcome, because an attacker would acknowledge
+  counted however they ended, because an attacker would acknowledge
   every attempt; at most 6 per minute, and 50 for a single-use request.
 * `N` is the number of payer sessions in which the payer sent its nonce.
-  They are counted whatever their outcome too, because a rogue payee that
+  They are counted however they ended too, because a rogue payee that
   saw the code drops the link or claims to be busy; at most 6 per minute,
   across searches. A payer attempt only helps the attacker while the
   genuine payee displays a code, which it does for at most the comparison
@@ -905,8 +904,7 @@ The BIP 39 English list was built to be read by people: every word is
 identified by its first four letters, and similar words such as "build" and
 "built" were left out. Almost every Bitcoin wallet already ships it, so the
 code needs no new list. Only the English list is used, because both screens
-must show the same words whatever language each wallet's user interface
-uses. The price of reusing it is that users know these words from recovery
+must show the same words in every user-interface language. The price of reusing it is that users know these words from recovery
 phrases, which is why wallets should label the code as what it is.
 
 ### No static keys
@@ -916,7 +914,7 @@ they would give every session a stable identifier that could be tracked.
 
 ### Payer as central
 
-The payee is the passive party, exactly like a displayed QR code. The payer
+The payee is the passive party, like a displayed QR code. The payer
 actively looks for a request when the user opens a send screen, as a QR
 scanner would. Advertising is cheap for the payee while its receive screen is
 visible. Scanning only runs while the payer is on a send screen.

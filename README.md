@@ -42,7 +42,7 @@ vectors byte for byte.
   attacker's chance below 0.008 % per single-use request.
 - **NFC carrier (Android payees).** The same string is served as a read-only
   NFC Forum Type 4 Tag holding one NDEF URI record. Any NFC reader, wallet or
-  not, sees exactly what the QR code shows. The physical tap is the
+  not, sees what the QR code shows. The physical tap is the
   authentication.
 - **Opaque payload.** The transport never parses the payment request. The
   payer runs it through the same code path as a scanned QR code, so no new
