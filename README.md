@@ -84,7 +84,7 @@ err := mgr.Share(ctx, "lightning:lnbc1...", nearby.ShareOptions{
 	case nearby.SessionFailed:
 		clearCode("") // a code of a failed session is not compared
 	case nearby.Chosen:
-		markPaidSoon(ev.Code) // Share returns nil right after this
+		showChosen(ev.Code) // picked, not paid; Share returns nil next
 	case nearby.SuspiciousActivity:
 		warn(ev.Sessions, ev.Window)
 	case nearby.AttemptLimitReached:
@@ -170,7 +170,9 @@ err = mgr.Choose(ctx, picked.PeerID, picked.ChosenToken)
   `Share` returns nil) when a payer sends `Chosen`. Set
   `ShareOptions.ContinueAfterChosen` for a request several people pay,
   such as a donation address. A `Chosen` is the word of whoever completed
-  that session, not proof of payment.
+  that session, not proof of payment: never show it as a payment state,
+  and let the payee's user share again if a stranger's `Chosen` ended the
+  share.
 - **Payer.** Each `Received` is good for confirming until its `ExpiresAt`;
   a collecting find reports `OfferExpired` then, drop the request from the
   picker. A Manager hands out at most `Params.MaxOffers` (4) requests per
