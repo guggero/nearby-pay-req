@@ -115,6 +115,12 @@ sessions reached a code within a minute: a rogue payee learns the code
 once the payer sent its nonce and can back out of a session whose code it
 cannot use, so every such session counts, delivered or not.
 
+Show the code large, in lower case, with its two words in order, and
+label it as a one-time comparison code: users know these words from
+recovery phrases. The spec's
+[Comparison code](spec/blip-nearby-payment-requests.md#comparison-code)
+section has the rest of the guidance for both screens.
+
 `Share` and `Find` block and call `emit` on the calling goroutine, so they
 map directly onto a server-streaming RPC handler.
 
