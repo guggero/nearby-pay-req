@@ -103,12 +103,16 @@ type finder struct {
 	expire   <-chan time.Time
 	expireAt time.Time
 
-	busyRetries map[string]int
-	retryAt     map[string]time.Time
-	window      <-chan time.Time
-	giveUp      <-chan time.Time
-	tooFarSent  bool
-	active      *payerRun
+	// busyRetries and connectRetries count the retries of sharers that
+	// were busy and whose connections did not come up; retryAt is when
+	// each may be tried again.
+	busyRetries    map[string]int
+	connectRetries map[string]int
+	retryAt        map[string]time.Time
+	window         <-chan time.Time
+	giveUp         <-chan time.Time
+	tooFarSent     bool
+	active         *payerRun
 }
 
 // run searches until a payment request was received (nil), ctx ends, the
@@ -121,6 +125,7 @@ func (f *finder) run(ctx context.Context) error {
 	f.failed = make(map[string]bool)
 	f.received = make(map[string]receivedOffer)
 	f.busyRetries = make(map[string]int)
+	f.connectRetries = make(map[string]int)
 	f.retryAt = make(map[string]time.Time)
 	defer f.stopScan(false)
 
@@ -676,23 +681,37 @@ func (f *finder) eligible(peer string) bool {
 
 // failActive ends the active session and goes back to picking. A sharer
 // that was busy serving someone else is tried again after BusyRetryDelay,
-// up to MaxBusyRetries times; any other failure excludes it for the rest of
-// this find.
+// up to MaxBusyRetries times, and one whose connection did not come up
+// after ConnectRetryDelay, up to MaxConnectRetries times; any other
+// failure excludes it for the rest of this find.
 func (f *finder) failActive(reason FailureReason) error {
 	if f.active == nil {
 		return nil
 	}
 	peer, connID := f.active.peer, f.active.connID
+	connected := f.active.connected
 	f.active = nil
 	delete(f.candidates, peer)
 	f.radio.disconnect(peer, connID)
 
-	if reason == FailurePeerBusy &&
-		f.busyRetries[peer] < f.params.MaxBusyRetries {
+	linkFailed := !connected && (reason == FailureConnectFailed ||
+		reason == FailureTimeout)
+	switch {
+	case reason == FailurePeerBusy &&
+		f.busyRetries[peer] < f.params.MaxBusyRetries:
 
 		f.busyRetries[peer]++
 		f.retryAt[peer] = f.clock.Now().Add(f.params.BusyRetryDelay)
-	} else {
+
+	case linkFailed &&
+		f.connectRetries[peer] < f.params.MaxConnectRetries:
+
+		f.connectRetries[peer]++
+		f.retryAt[peer] = f.clock.Now().Add(
+			f.params.ConnectRetryDelay,
+		)
+
+	default:
 		f.failed[peer] = true
 	}
 

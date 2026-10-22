@@ -185,6 +185,12 @@ err = mgr.Choose(ctx, picked.PeerID, picked.ChosenToken)
 - **Busy payees.** A payer that finds a payee busy with another payer tries
   again after `Params.BusyRetryDelay` instead of skipping it, long enough to
   outlast a held comparison.
+- **Failed connections.** A payee whose connection did not come up is
+  tried again after `Params.ConnectRetryDelay` (1 s), up to
+  `Params.MaxConnectRetries` (2) times, since phones fail connections for
+  reasons that pass. A session that failed once the link was up excludes
+  the payee for the rest of the find; call `Find` again to try everyone
+  once more.
 
 ### Tuning
 

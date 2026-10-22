@@ -800,3 +800,56 @@ func TestNFCFollowsStatus(t *testing.T) {
 	n.mgr.StatusChanged()
 	require.False(t, n.radio.HceActive())
 }
+
+// TestConnectRetry checks that a sharer whose connection did not come up is
+// tried again after ConnectRetryDelay, up to MaxConnectRetries times, and
+// skipped for the rest of the find after that.
+func TestConnectRetry(t *testing.T) {
+	t.Parallel()
+
+	world := nearbytest.NewWorld()
+	payer := newNodeWithParams(t, world, "payer", Params{
+		FindGiveUpAfter: time.Hour,
+	})
+	near := newNode(t, world, "near")
+	far := newNode(t, world, "far")
+	world.SetRSSI("payer", "far", -60)
+	expectStarted(t, near.share(t, testRequest, false), true, false)
+	expectStarted(t, far.share(t, testRequest, false), true, false)
+
+	// One failed connect, one retry that works.
+	payer.radio.FailNextConnect()
+	find := startFind(t, world, payer)
+	nextAs[Connecting](t, find)
+	require.Equal(
+		t, FailureConnectFailed, nextAs[SessionFailed](t, find).Reason,
+	)
+	payer.advance(payer.params.ConnectRetryDelay)
+	world.Advertise()
+	payer.nextWindow(t)
+	nextAs[Connecting](t, find)
+	require.Equal(t, "near", nextAs[Received](t, find).PeerID)
+	require.NoError(t, find.end(t))
+
+	// Every connect fails: after the retries the near sharer is skipped
+	// and the far one gets its turn.
+	payer.radio.FailNextConnect()
+	find = startFind(t, world, payer)
+	for i := range payer.params.MaxConnectRetries + 1 {
+		nextAs[Connecting](t, find)
+		require.Equal(
+			t, FailureConnectFailed,
+			nextAs[SessionFailed](t, find).Reason,
+		)
+		if i == payer.params.MaxConnectRetries {
+			break
+		}
+		payer.radio.FailNextConnect()
+		payer.advance(payer.params.ConnectRetryDelay)
+		world.Advertise()
+		payer.nextWindow(t)
+	}
+	payer.nextWindow(t)
+	nextAs[Connecting](t, find)
+	require.Equal(t, "far", nextAs[Received](t, find).PeerID)
+}

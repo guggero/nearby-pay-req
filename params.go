@@ -19,6 +19,8 @@ const (
 	defaultSuspiciousWindow         = time.Minute
 	defaultBusyRetryDelay           = 2 * time.Second
 	defaultMaxBusyRetries           = 12
+	defaultConnectRetryDelay        = time.Second
+	defaultMaxConnectRetries        = 2
 	defaultComparisonTimeout        = 20 * time.Second
 	defaultMaxCodeAttemptsPerWindow = 6
 	defaultMaxCodeAttempts          = 50
@@ -127,6 +129,17 @@ type Params struct {
 	// with BusyRetryDelay it should outlast a ComparisonTimeout.
 	MaxBusyRetries int
 
+	// ConnectRetryDelay is how long a payer waits before trying a sharer
+	// again whose connection did not come up: the link failed or timed
+	// out before the service was discovered and notifications enabled.
+	// Phones fail connections for reasons that pass.
+	ConnectRetryDelay time.Duration
+
+	// MaxConnectRetries is how often a payer retries such a sharer
+	// within one find before skipping it for the rest of the find. A
+	// session that failed once the link was up is never retried.
+	MaxConnectRetries int
+
 	// ComparisonTimeout is how long a comparison lasts. A payee keeps
 	// the code of a delivered session on screen that long, turning
 	// other payers away as busy, unless that session's payer chose the
@@ -195,6 +208,8 @@ func DefaultParams() Params {
 		SuspiciousWindow:         defaultSuspiciousWindow,
 		BusyRetryDelay:           defaultBusyRetryDelay,
 		MaxBusyRetries:           defaultMaxBusyRetries,
+		ConnectRetryDelay:        defaultConnectRetryDelay,
+		MaxConnectRetries:        defaultMaxConnectRetries,
 		ComparisonTimeout:        defaultComparisonTimeout,
 		MaxCodeAttemptsPerWindow: defaultMaxCodeAttemptsPerWindow,
 		MaxCodeAttempts:          defaultMaxCodeAttempts,
@@ -235,6 +250,7 @@ func (p Params) withDefaults() Params {
 	duration(&p.SessionRateWindow, d.SessionRateWindow)
 	duration(&p.SuspiciousWindow, d.SuspiciousWindow)
 	duration(&p.BusyRetryDelay, d.BusyRetryDelay)
+	duration(&p.ConnectRetryDelay, d.ConnectRetryDelay)
 	duration(&p.ComparisonTimeout, d.ComparisonTimeout)
 	duration(&p.ChosenRetention, d.ChosenRetention)
 	duration(&p.ChooseRetryDelay, d.ChooseRetryDelay)
@@ -244,6 +260,7 @@ func (p Params) withDefaults() Params {
 	count(&p.MaxSessionsPerWindow, d.MaxSessionsPerWindow)
 	count(&p.SuspiciousThreshold, d.SuspiciousThreshold)
 	count(&p.MaxBusyRetries, d.MaxBusyRetries)
+	count(&p.MaxConnectRetries, d.MaxConnectRetries)
 	count(&p.ChooseAttempts, d.ChooseAttempts)
 	count(&p.EventQueueLen, d.EventQueueLen)
 	count(&p.MaxCentrals, d.MaxCentrals)

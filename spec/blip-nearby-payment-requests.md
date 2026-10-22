@@ -170,7 +170,12 @@ The payer:
     search.
   - SHOULD skip a payee whose session failed earlier in the same search and
     try the next candidate. A payee that answered `ABORT(BUSY)` is not
-    failed: see [ABORT](#abort).
+    failed: see [ABORT](#abort). Neither is a payee whose connection did
+    not come up (the link failed or timed out before the service was
+    discovered and notifications enabled): phones fail connections for
+    reasons that pass, so the payer SHOULD try such a payee again after a
+    short delay, a limited number of times (1 second and 2 retries are
+    RECOMMENDED).
   - MAY collect the payment requests of several payees in one search, by
     running a session with each candidate in turn (strongest first) instead
     of stopping after the first, so its user can pick the request whose
@@ -620,6 +625,7 @@ environment, and SHOULD let applications do so. In one place:
 | Code attempts per shared request | 50 | [Connection setup](#connection-setup) |
 | Suspicious code attempts, payee and payer | 4 per 60 s | [Session flow](#session-flow), [Discovery](#discovery-and-peer-selection) |
 | Busy retry delay, retries | 2 s, 12 | [ABORT](#abort) |
+| Connect retry delay, retries | 1 s, 2 | [Discovery](#discovery-and-peer-selection) |
 | `chosen_token` retention | 2 min | [Choosing a request](#choosing-a-request) |
 
 A busy room (a shop counter, an event) typically wants a higher session cap
