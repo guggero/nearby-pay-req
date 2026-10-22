@@ -322,11 +322,17 @@ them. Chosen tokens, keys and nonces are never logged.
 ## Development
 
 ```sh
-make check            # build, golangci-lint, unit tests with -race
+make check            # build, formatting, go vet + golangci-lint, unit tests
+make fmt              # gosimports, gofmt -s and goformat, in place
 make unit pkg=session case=TestSpecVectors
 make fuzz             # fuzz the NDEF decoder and the chunk reassembler
 make vectors          # regenerate spec/vectors.json from spec/gen
 ```
+
+The unit tests run with the race detector. The formatting and lint tools
+are pinned in the `tool` block of `go.mod` and run through `go tool`, so
+every checkout and CI use the same versions; `goformat.toml` holds the
+formatting rules (80 columns, tabs as 8).
 
 Two sets of vectors guard the protocol:
 

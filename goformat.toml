@@ -1,0 +1,99 @@
+# 80-character line limit, tabs treated as 8 spaces.
+line_length = 80
+tab_width   = 8
+
+# When false (default), goformat only rewrites code that violates a rule.
+# Code that's merely "acceptable" instead of "preferred" is left alone.
+# Set true to always canonicalize to the "preferred" form.
+canonicalize = false
+
+# When true, enables SOFT fixes: purely space-efficiency reformatting of
+# code that already fits within LineLength and is structurally valid
+# (collapsing a multi-line call onto one line, repacking one-arg-per-
+# line layouts tighter, joining/repacking string concats that break
+# early, re-imposing symmetry on fitting code, compacting comments that
+# already fit). When false (the default) goformat only performs HARD
+# fixes: it reformats a construct solely to resolve an over-limit line
+# or a required non-space structural rule (mandatory blank lines, etc.).
+optimize = false
+
+# Formatting-style calls whose overlong lines get the compact wrap
+# exception (string-literal split on `+`, argument list packed).
+formatting_funcs = [
+    "fmt.Errorf",
+    "fmt.Printf",
+    "fmt.Sprintf",
+    "fmt.Fprint",
+    "fmt.Fprintf",
+    "log.Tracef",
+    "log.Debugf",
+    "log.Infof",
+    "log.Warnf",
+    "log.Errorf",
+    "log.Criticalf",
+    "t.Errorf",
+    "t.Fatalf",
+    "t.Log",
+    "t.Logf",
+    "t.Skipf",
+    "require.NoErrorf",
+    "require.Errorf",
+    "require.Containsf",
+    "require.NotContainsf",
+    "require.NotNilf",
+    "require.Truef",
+    "require.Falsef",
+    "require.Failf",
+    "require.NotEqualf",
+    "require.Equalf",
+    "require.EqualValuesf",
+    "require.Greaterf",
+    "require.Eventuallyf",
+    "require.NotEmptyf",
+    "require.Zerof",
+    "assert.Errorf",
+    "status.Errorf",
+    "errp.Newf"
+]
+
+# Calls that look like formatting functions but must be wrapped normally
+# because they're flow-relevant (assertion helpers etc.).
+formatting_funcs_deny = [
+
+]
+
+# Method names recognised as structured-log calls (signature: ctx, msg,
+# variadic attrs). When no type info is available, detection is name-based;
+# Phase 4 type-info mode (post-v0.1) refines this.
+structured_log_methods = [
+    "TraceS", "DebugS", "InfoS", "WarnS", "ErrorS", "CriticalS",
+]
+
+# Paths to skip when goformat walks a directory argument. Each entry is
+# matched against:
+#   - the entry's basename (e.g. "vendor")
+#   - the path relative to the walked root (e.g. "internal/legacy")
+#   - the relative path as a LEADING SEGMENT — "internal/legacy" matches
+#     "internal/legacy" and every "internal/legacy/..." descendant
+# Glob metachars (*, ?, [...]) work in patterns; "**" is NOT supported.
+# Matched directories are pruned (their contents aren't visited).
+# The CLI's -exclude flag APPENDS to this list. The built-in skips
+# (vendor, testdata, dot- and underscore-prefixed dirs) always apply on
+# top of these.
+exclude = [
+]
+
+[rules]
+# All rules are on by default; flip to false to disable.
+# switch_case_spacing       = true   # R1
+# func_signature_body_blank = true   # R2
+# func_def_wrap             = true   # R3
+# func_call_wrap            = true   # R4
+# formatting_fn_compact     = true   # R5
+# structured_log_wrap       = true   # R8
+# inline_composite_lit      = true   # R7 (composite-literal reflow)
+# string_lit_wrap           = true   # R9
+# stanza_spacing            = true   # R11
+# body_split                = true   # R12
+# var_block_wrap            = true   # R13
+# comment_reflow            = true   # R15
