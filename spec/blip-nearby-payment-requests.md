@@ -25,7 +25,7 @@ Two carriers are defined:
   two nonces. Both wallets then display the same *comparison code*, two
   words of the BIP 39 English word list, and the payer's user confirms the
   codes match before paying. This authenticates the request against a nearby
-  attacker without pairing, without long-term keys and without any OS prompt.
+  attacker without pairing, long-term keys or OS prompts.
 * **NFC.** A payee whose platform supports host card emulation serves the
   same string as a read-only NFC Forum Type 4 Tag holding one NDEF URI record.
   The physical tap is the authentication.
@@ -52,7 +52,7 @@ works, but it has well-known friction:
 * Accessibility. Aiming a camera at a small code is hard for users with
   limited vision or motor control.
 
-Earlier attempts show the demand. Bitcoin Wallet for Android shipped BIP 70
+This has been tried before. Bitcoin Wallet for Android shipped BIP 70
 payment requests over classic Bluetooth and NFC in 2014, and NFC tag
 emulation is reappearing in point-of-sale apps (see
 [Prior art](#prior-art)). Some wallets also work around the problem with
@@ -63,11 +63,11 @@ same app. And because every proprietary scheme advertises its own
 identifier, the advertisement also reveals which app is in use.
 
 Phones can already move a few kilobytes reliably between them over BLE GATT,
-and many Android phones can emulate NFC tags. What is missing is an agreed
-wire format and an agreed authentication step. This bLIP provides both,
-keeping the payload as opaque as a QR code, so a wallet can add the
-feature without a new parsing surface and support new payment formats on
-the same day it supports them in its QR scanner.
+and many Android phones can emulate NFC tags. Missing are an agreed wire
+format and an agreed authentication step. This bLIP provides both. The
+payload stays as opaque as a QR code, so a wallet adds the feature without
+a new parsing surface and carries a new payment format from the day its
+QR scanner accepts it.
 
 ## Specification
 
@@ -724,14 +724,13 @@ for confirmation at a time, each for a limited time, across searches (see
 
 A payee keeps sharing after a delivery so that the second payer in the
 room can get the same request, and stops on `CHOSEN` once the right payer
-has it. Meanwhile the payee holds the delivered code on screen
-and turns other payers away as busy, so a second payer cannot silently
-replace the code the first payer's user is comparing; the hold ends with
-that payer's `CHOSEN` or after the comparison timeout, and busy payers
-retry. The hold costs a full session, which the code-attempt limits
-bound, and always expires, so a payer, honest or not, never reserves a
-payee for longer. A payer collecting from several payees holds each of
-them for the comparison timeout at most.
+has it. Meanwhile the payee keeps the delivered code on screen and turns
+other payers away as busy, so a second payer cannot replace the code the
+first payer's user is comparing. The hold ends with that payer's `CHOSEN`
+or at the comparison timeout, and busy payers retry. Holding costs a full
+session, which the code-attempt limits bound, and never lasts past the
+timeout, so no payer reserves a payee for longer. A payer collecting from
+several payees holds each of them for the comparison timeout at most.
 
 `CHOSEN` travels on a new connection rather than keeping the session's
 link open while the user compares codes, because an open link would hold

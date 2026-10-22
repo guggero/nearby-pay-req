@@ -9,7 +9,7 @@ send screen, finds the payee nearby and receives the exact string the QR code
 encodes (a `lightning:` URI, a BIP 21 URI, a BOLT 11 invoice, a BOLT 12
 offer, …). Both screens then show the same code of two words from the BIP 39
 English word list, and the payer confirms the codes match before paying.
-There is no pairing, no account, no long-term key and no OS prompt.
+No pairing, no long-term keys, no OS prompt.
 
 The protocol is written up as a bLIP draft in [`spec/`](spec/). This library
 is its reference implementation, and its tests reproduce the draft's test
