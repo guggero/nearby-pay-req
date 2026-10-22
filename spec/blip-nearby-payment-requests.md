@@ -56,11 +56,11 @@ Earlier attempts show the demand. Bitcoin Wallet for Android shipped BIP 70
 payment requests over classic Bluetooth and NFC in 2014, and NFC tag
 emulation is reappearing in point-of-sale apps (see
 [Prior art](#prior-art)). Some wallets also work around the problem with
-proprietary "tap to pay" or "send to nearby" features. Each one uses its own UUIDs, framing and security
-model, so they only interoperate with themselves. A user can only pay a
-nearby friend this way if both run the same app. And because every
-proprietary scheme advertises its own identifier, the advertisement also
-reveals which app is in use.
+proprietary "tap to pay" or "send to nearby" features. Each one uses its
+own UUIDs, framing and security model, so they only interoperate with
+themselves. A user can only pay a nearby friend this way if both run the
+same app. And because every proprietary scheme advertises its own
+identifier, the advertisement also reveals which app is in use.
 
 Phones can already move a few kilobytes reliably between them over BLE GATT,
 and many Android phones can emulate NFC tags. What is missing is an agreed
@@ -98,8 +98,8 @@ The payload is a UTF-8 string, called `payment_request` below.
 The payee:
   - MUST set `payment_request` to the exact string it would encode in a QR
     code for the same request.
-  - SHOULD use a URI form with a scheme (`lightning:`, `bitcoin:`, …) where one
-    exists.
+  - SHOULD use a URI form with a scheme (`lightning:`, `bitcoin:`, …) where
+    one exists.
   - MUST NOT send a `payment_request` that is empty, longer than 8192 bytes,
     not valid UTF-8, or that contains a NUL (`0x00`) byte.
 
