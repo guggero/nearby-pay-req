@@ -412,6 +412,12 @@ The payee:
     first payer's user is still comparing. The hold MUST end at the
     timeout whatever happens, so a session never reserves the payee
     longer.
+  - SHOULD stop displaying a code once its session failed, and once the
+    hold of its comparison ended. The payer's user may not confirm the
+    request after that (see [Comparison code](#comparison-code)), and a
+    code left on screen is a target for an attacker rerolling the payer's
+    code for as long as it stays there (see
+    [Rationale](#noise-nn-with-a-commitreveal-comparison-code)).
   - SHOULD warn its user if four or more sessions within 60 seconds reached
     their code, whether they ended with `ack` = 0 or not. Sessions are
     counted regardless of the `ack`, because the `ack` is the payer's word

@@ -79,7 +79,9 @@ err := mgr.Share(ctx, "lightning:lnbc1...", nearby.ShareOptions{
 	case nearby.Delivered:
 		markDelivered(ev.Code) // held on screen while the payer compares
 	case nearby.ComparisonExpired:
-		releaseCode(ev.Code) // the next payer may replace it now
+		clearCode(ev.Code) // its payer may no longer confirm it
+	case nearby.SessionFailed:
+		clearCode("") // a code of a failed session is not compared
 	case nearby.Chosen:
 		markPaidSoon(ev.Code) // Share returns nil right after this
 	case nearby.SuspiciousActivity:
@@ -155,7 +157,10 @@ err = mgr.Choose(ctx, picked.PeerID, picked.ChosenToken)
   room can still get the request. For `Params.ComparisonTimeout` (20 s) it
   holds the delivered code on screen and turns other payers away as busy,
   so nobody replaces the code its payer is comparing; `Chosen` from that
-  payer ends the hold, otherwise `ComparisonExpired` does. It stops (and
+  payer ends the hold, otherwise `ComparisonExpired` does. Take the code
+  off the screen on `ComparisonExpired` and on a `SessionFailed` after
+  `PeerConnected`: nobody may confirm it any more, and a code left on
+  screen is a target for an attacker. It stops (and
   `Share` returns nil) when a payer sends `Chosen`. Set
   `ShareOptions.ContinueAfterChosen` for a request several people pay,
   such as a donation address. A `Chosen` is the word of whoever completed
