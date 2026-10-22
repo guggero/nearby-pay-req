@@ -150,3 +150,22 @@ func TestLateInterrupt(t *testing.T) {
 	mux.interruptShare(second)
 	require.Equal(t, []string{"payee/7", "payer"}, native.closed)
 }
+
+// TestAdvertisementsYield checks that advertisements only ever fill half
+// of an event queue, so a flood of them cannot crowd out the events of a
+// session in progress.
+func TestAdvertisementsYield(t *testing.T) {
+	t.Parallel()
+
+	s := make(sink, 4)
+	for range 3 {
+		s.pushAdvertisement(event{kind: evAdvertisement})
+	}
+	require.Len(t, s, 2)
+
+	s.push(event{kind: evNotify})
+	s.push(event{kind: evNotify})
+	require.Len(t, s, 4)
+	s.push(event{kind: evNotify})
+	require.Len(t, s, 4)
+}

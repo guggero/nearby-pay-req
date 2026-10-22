@@ -92,6 +92,18 @@ func (s sink) push(ev event) {
 	}
 }
 
+// pushAdvertisement enqueues an advertisement unless the queue is half
+// full. Advertisements are the one event a stranger can produce at any
+// rate, and a lost one costs nothing: the next sighting replaces it. The
+// events of a session in progress get the other half of the queue, so a
+// flood of advertisements cannot drop them.
+func (s sink) pushAdvertisement(ev event) {
+	if len(s) >= cap(s)/2 {
+		return
+	}
+	s.push(ev)
+}
+
 // radioMux wraps the platform radio. It owns the single callback object of
 // each role, so the native side always reports to the same Go value, and
 // routes events to whichever share or find is currently subscribed. It also
@@ -458,7 +470,13 @@ func (r *radioMux) dispatchScan(ev event) {
 	}
 	r.mu.Unlock()
 
-	if s != nil {
+	switch {
+	case s == nil:
+
+	case ev.kind == evAdvertisement:
+		s.pushAdvertisement(ev)
+
+	default:
 		s.push(ev)
 	}
 }
