@@ -188,7 +188,9 @@ err = mgr.Choose(ctx, picked.PeerID, picked.ChosenToken)
   for the other requests: drop the picker when calling `Choose`.
 - **Busy payees.** A payer that finds a payee busy with another payer tries
   again after `Params.BusyRetryDelay` instead of skipping it, long enough to
-  outlast a held comparison.
+  outlast a held comparison. Each try reports a `SessionFailed` with
+  `FailurePeerBusy`, up to `Params.MaxBusyRetries` (12) of them over
+  24 s: show them as one "waiting for the payee" state, not as errors.
 - **Failed connections.** A payee whose connection did not come up is
   tried again after `Params.ConnectRetryDelay` (1 s), up to
   `Params.MaxConnectRetries` (2) times, since phones fail connections for
