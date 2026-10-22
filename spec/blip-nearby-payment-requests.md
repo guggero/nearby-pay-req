@@ -154,6 +154,11 @@ The payee:
 
 #### Discovery and peer selection
 
+A *search* is one scan for payees: it starts when the user opens a screen
+where a payment request can be entered and ends when the user confirmed a
+request or left the screen. A search may run several sessions, with
+several payees or with one payee more than once.
+
 The payer:
   - SHOULD scan for the service UUID only while the user is on a screen
     where a payment request can be entered.
