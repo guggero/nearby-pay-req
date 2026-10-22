@@ -582,8 +582,8 @@ extensions: a sender MUST NOT add any, and a receiver MUST ignore them.
 | 6 | `CANCELLED` | the sender stopped the session on purpose |
 | 7 | `UNKNOWN_SESSION` | the payee does not remember the `chosen_token` of a `CHOSEN` |
 
-`ABORT` is neither encrypted nor authenticated: anyone in radio range can
-inject one.
+`ABORT` is neither encrypted nor authenticated: anyone with link-layer
+access to the connection can inject one.
 
 A receiver of an `ABORT`:
   - MUST end the session. An `ABORT` MUST NOT change what a session has
@@ -910,13 +910,13 @@ distinguishable groups.
 | Grinding: repeated sessions until the payee shows a code the payer's user accepts | Both sides count every session that reaches its code, the payee at message 3 and the payer when it sends its nonce: at most 6 per minute each, and 50 per shared request on the payee; the payer holds at most 4 requests for confirmation, each for 20 s; the payee takes a code off its screen after that; both warn | Below 0.008 % per shared request with the RECOMMENDED parameters (see [Rationale](#noise-nn-with-a-commitreveal-comparison-code)); the warnings are heuristics with false positives in busy rooms |
 | A second payer replacing the code the first payer's user compares | The payee holds a delivered code for the comparison timeout and answers other payers `BUSY` | A held payee answers other payers `BUSY` for up to 20 s. An attacker that completes sessions can renew holds back to back within the per-minute limit and use up the per-request cap, as it could keep the payee busy by stalling sessions; the warning is what the payee's user sees |
 | Replay of an earlier session | Fresh ephemerals and nonces in every session; the code depends on both | none |
-| Passive eavesdropping on the payment request (amount, node id, address) | ChaCha20-Poly1305 from message 2 onwards | The advertisement itself reveals that a payment request is being displayed nearby. Any nearby party can run its own payer session and read the request: encryption does not restrict who the audience is, exactly as anyone can photograph a displayed QR code |
+| Passive eavesdropping on the payment request (amount, node id, address) | ChaCha20-Poly1305 from message 2 onwards | The advertisement itself reveals that a payment request is being displayed nearby. Any nearby party can run its own payer session and read the request, amount, description and node id included: encryption does not restrict who the audience is, as anyone can photograph a displayed QR code, and unlike a QR code the radio needs no line of sight. Each such read costs the reader a code attempt and makes a code appear on the payee's screen with nobody paying, which is the payee's cue |
 | Proximity | RSSI-based payee selection | RSSI is a usability heuristic an attacker can influence with transmit power; it neither establishes distance nor rules out relays |
 | Tracking through stable identifiers | No static keys, no local name, no manufacturer or service data, private addresses, advertising only while a request is displayed | The shared service UUID identifies the protocol, not the wallet |
 | Pairing prompt abuse | Compliant attributes require no security, so a compliant payee never makes the OS offer pairing | A rogue peripheral advertising the service can require security on its own attributes, and some platforms then start pairing on their own; payers cannot fully prevent that prompt |
 | Malformed input (memory exhaustion, parser attacks) | Bounded message length (12288 bytes), bounded payload (8192 bytes), strict chunk and TLV rules, one payer at a time, a session timeout enforced across every chunk, a first-message timeout, bounded payers without a session, tokens and tracked payees | Radio-level denial of service remains possible; on iOS a payee cannot force a payer's link closed and only stops serving it |
 | A forged `CHOSEN`, to stop a payee from sharing | `chosen_token` depends on both nonces, which only travel encrypted, so only a payer that completed a session with the payee can produce it | An attacker that completes its own session as a payer can send `CHOSEN` and stop the share if the payee stops on it, as it could by holding the session slot; `CHOSEN` is no proof that the intended payer chose or paid. The payee's user can share again, and QR still works |
-| Replay of an observed `CHOSEN` | The payee forgets a token on first use, and an eavesdropper only sees a token as it is used | none |
+| Replay of an observed `CHOSEN` | The payee forgets a token on first use, and an eavesdropper only sees a token as it is used | none: a token captured before the payee saw it, from a connection that dropped, can only do what the genuine `CHOSEN` would have done |
 | A forged `ABORT` | `ABORT` can only end a session, never change what it delivered | An attacker in range can keep disrupting sessions; QR and NFC still work |
 | Slot holding: an attacker connects and stalls | One payer at a time, the session timeout, rate limits | A persistent attacker in range can keep the BLE share busy; QR and NFC still work |
 | NFC relay of the payee's tag to a distant payer | none needed: a relay delivers the payee's genuine request | none |
@@ -960,7 +960,9 @@ Future changes are accommodated as follows:
   `CHOSEN`: a payee that predates them answers `ABORT(PROTOCOL_ERROR)`,
   which the sender treats as "not supported";
 * incompatible changes inside the message layer through the `version` byte
-  and `ABORT(VERSION_UNSUPPORTED)`;
+  and `ABORT(VERSION_UNSUPPORTED)`. A payer MUST NOT retry with a version
+  below the lowest it is configured to accept, so a forged `ABORT` cannot
+  undo what a later version fixes;
 * a change to the chunk layer or GATT layout through a new service UUID.
 
 ## Reference Implementations
