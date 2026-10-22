@@ -101,8 +101,8 @@ func New() *Tag {
 }
 
 // SetMessage loads an NDEF message to serve. onRead, which may be nil, is
-// called — without the tag's lock held, so it may call back into the tag —
-// each time a reader finishes reading the whole message. It must not block:
+// called each time a reader finishes reading the whole message, without
+// the tag's lock held, so it may call back into the tag. It must not block:
 // it runs on the Android main thread.
 func (t *Tag) SetMessage(message []byte, onRead func()) error {
 	if len(message) == 0 || len(message) > maxNdefMessageLen {

@@ -341,7 +341,7 @@ func (m *Manager) Find(ctx context.Context, opts FindOptions,
 }
 
 // claim makes the caller the one running share (or find). A previous one is
-// cancelled with ErrReplaced and, crucially, waited for: its cleanup stops
+// cancelled with ErrReplaced and waited for: its cleanup stops
 // advertising and clears the NFC tag, which must not undo what the new call
 // sets up. The returned stop releases the slot and signals completion; it
 // must run after the call's own cleanup.

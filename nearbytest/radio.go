@@ -1,6 +1,6 @@
 // Package nearbytest provides in-memory radios that implement radio.Radio
-// and are linked to each other through a shared World, so the Manager — and
-// whole apps embedding it — can be tested end to end without Bluetooth. It
+// and are linked to each other through a shared World, so the Manager, and
+// whole apps embedding it, can be tested end to end without Bluetooth. It
 // is meant to be imported from tests only.
 package nearbytest
 

@@ -2,8 +2,8 @@
 // exchange as sans-IO state machines: a PayeeSession that serves a payment
 // request and a PayerSession that fetches one. They take reassembled
 // messages in and hand messages to send out, with no goroutines, radios or
-// clocks of their own, so the whole protocol — Noise handshake, commitment,
-// comparison code and TLV payloads — is testable from bytes alone. The
+// clocks of their own, so the whole protocol (Noise handshake, commitment,
+// comparison code and TLV payloads) is testable from bytes alone. The
 // Manager in the root package owns I/O and timeouts.
 //
 // The exchange is Noise_NN_25519_ChaChaPoly_SHA256 followed by a

@@ -780,7 +780,7 @@ func (s *sharer) sessionFailed(reason FailureReason) error {
 // recordCodeAttempt counts a session that reached its code. Every such
 // session counts, whatever comes of it: the payer learns the code, and an
 // acknowledgement is the payer's word only, so a man in the middle grinding
-// for a matching code would simply acknowledge every attempt.
+// for a matching code would acknowledge every attempt.
 func (s *sharer) recordCodeAttempt() {
 	now := s.clock.Now()
 	s.codeAttempts = append(

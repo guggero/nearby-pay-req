@@ -19,8 +19,8 @@ const (
 // DecodeURIMessage returns the URI of a message holding exactly one NFC
 // Forum URI record, the shape EncodeURIMessage produces and a payee's tag
 // serves. A payer reading the tag through the platform's NFC API can hand
-// the raw message here. Anything else — several records, chunked records,
-// another record type, an unknown identifier code, invalid UTF-8 or NUL —
+// the raw message here. Anything else (several records, chunked records,
+// another record type, an unknown identifier code, invalid UTF-8 or NUL)
 // is refused with ErrMalformed rather than guessed at.
 func DecodeURIMessage(msg []byte) (string, error) {
 	if len(msg) < 3 {
