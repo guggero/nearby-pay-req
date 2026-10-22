@@ -7,7 +7,7 @@ have to point a camera at a QR code.
 The payee wallet keeps showing its receive screen. The payer wallet opens its
 send screen, finds the payee nearby and receives the exact string the QR code
 encodes (a `lightning:` URI, a BIP 21 URI, a BOLT 11 invoice, a BOLT 12
-offer, …). Both screens then show the same code of two words from the BIP 39
+offer, …). Both screens then show the same two-word code from the BIP 39
 English word list, and the payer confirms the codes match before paying.
 No pairing, no long-term keys, no OS prompt.
 
