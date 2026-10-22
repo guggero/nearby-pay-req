@@ -16,8 +16,11 @@ import (
 const (
 	// controlSendTimeout bounds sending a message that belongs to no
 	// session deadline: a BUSY turning a payer away, the answer to a
-	// CHOSEN, or an ABORT for malformed input. Each is one chunk.
-	controlSendTimeout = time.Second
+	// CHOSEN, or an ABORT for malformed input. Each is one chunk, and
+	// the payee sends it on the loop that also serves its active
+	// session, whose deadline keeps running meanwhile, so it is short:
+	// a peer that misses it learns the outcome from the disconnect.
+	controlSendTimeout = 250 * time.Millisecond
 
 	// abortSendTimeout bounds the best-effort ABORT sent once a session
 	// deadline passed, which is all a session may overrun its deadline
