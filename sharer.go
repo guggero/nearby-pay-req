@@ -87,6 +87,7 @@ type sharer struct {
 
 	paymentRequest      string
 	continueAfterChosen bool
+	reusable            bool
 
 	// nfcRequested is whether the caller asked for NFC, nfcAvailable
 	// reports whether NFC can serve right now, and nfc is whether the
@@ -791,7 +792,8 @@ func (s *sharer) recordCodeAttempt() {
 
 // reviewAttempts warns once a share saw SuspiciousThreshold code attempts
 // within SuspiciousWindow, at most once per window, and stops serving over
-// BLE once the share used up its MaxCodeAttempts. It runs between events,
+// BLE once a share of a single-use request used up its MaxCodeAttempts; a
+// reusable request has no such cap. It runs between events,
 // so the session that tipped either is reported first, and it waits for a
 // held comparison to end, so that payer can still choose.
 func (s *sharer) reviewAttempts() error {
@@ -815,7 +817,8 @@ func (s *sharer) reviewAttempts() error {
 		}
 	}
 
-	if s.exhausted || s.totalCodeAttempts < s.params.MaxCodeAttempts ||
+	if s.reusable || s.exhausted ||
+		s.totalCodeAttempts < s.params.MaxCodeAttempts ||
 		s.active != nil || s.held != nil {
 
 		return nil

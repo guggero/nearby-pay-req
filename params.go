@@ -107,9 +107,12 @@ type Params struct {
 	MaxOffers int
 
 	// MaxCodeAttempts caps the sessions that may reach their code during
-	// one share. Once reached, the payee stops serving over BLE (see
-	// AttemptLimitReached), so an attacker's chance stays below
-	// MaxCodeAttempts in a million per share however long it runs.
+	// one share of a single-use request. Once reached, the payee stops
+	// serving over BLE (see AttemptLimitReached): an invoice is paid
+	// once, so that many attempts are not honest use. A share with
+	// ShareOptions.Reusable ignores it, since every honest payment is an
+	// attempt there; the per-minute limit bounds each comparison on its
+	// own.
 	MaxCodeAttempts int
 
 	// SuspiciousThreshold is how many code attempts within

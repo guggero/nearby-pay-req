@@ -35,9 +35,9 @@ vectors byte for byte.
   matches with probability 2⁻²². Repeating sessions is bounded on both
   sides: each wallet counts every session whose code its peer could
   compute, the payee from message 3 and the payer from sending its nonce,
-  and allows 6 per minute (the payee also 50 per shared request); a payer
-  holds at most 4 requests for confirmation at a time. That keeps an
-  attacker's chance below 0.008 % per shared request.
+  and allows 6 per minute (the payee also 50 per single-use request); a
+  payer holds at most 4 requests for confirmation at a time. That keeps an
+  attacker's chance below 0.008 % per single-use request.
 - **NFC carrier (Android payees).** The same string is served as a read-only
   NFC Forum Type 4 Tag holding one NDEF URI record. Any NFC reader, wallet or
   not, sees exactly what the QR code shows. The physical tap is the
@@ -217,7 +217,10 @@ mgr := nearby.New(nearby.Config{
 
 Raising `MaxCodeAttemptsPerWindow`, `MaxCodeAttempts`, `MaxOffers` or
 `ComparisonTimeout` raises the bound on code grinding; the spec derives
-it. The spec's
+it. A share of a request many people pay, such as an offer or a donation
+address, sets `ShareOptions.Reusable`: every honest payment is a code
+attempt, so `MaxCodeAttempts` would end its BLE sharing after that many
+customers, while the per-minute limit bounds each comparison on its own. The spec's
 [Parameters](spec/blip-nearby-payment-requests.md#parameters) section lists
 the recommended values.
 

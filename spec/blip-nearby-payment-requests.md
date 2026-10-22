@@ -232,11 +232,19 @@ The payee:
   - MUST rate-limit new sessions. It SHOULD accept at most one new session
     per second and at most 30 per rolling 60 seconds, and SHOULD answer any
     session beyond that limit with `ABORT(BUSY)`.
-  - MUST limit the sessions that reach their code (message 3): at most 6
-    per rolling 60 seconds is RECOMMENDED, and at most 50 while it shares
-    one request, after which it MUST stop serving that request over BLE.
-    A session counts once it reached its code, whatever its outcome. The
-    payee answers sessions beyond the per-minute limit with `ABORT(BUSY)`.
+  - MUST limit its *code attempts*, the sessions that reached message 3,
+    where the payee computes the code (see [Session flow](#session-flow)):
+    at most 6 per rolling 60 seconds is RECOMMENDED. A session counts
+    once it reached its code, whatever its outcome. The payee answers
+    sessions beyond the limit with `ABORT(BUSY)`.
+  - SHOULD also cap the code attempts of a single-use request (50 is
+    RECOMMENDED) and stop serving it over BLE at the cap: an invoice is
+    paid once, so that many attempts are not honest use. A reusable
+    request, such as an offer or a donation address that many people
+    pay, SHOULD NOT be capped this way, since every honest payment is an
+    attempt; the per-minute limit and the comparison timeout bound each
+    comparison on their own (see
+    [Rationale](#noise-nn-with-a-commitreveal-comparison-code)).
   - MUST NOT send `ABORT(BUSY)` after it sent message 2. Whether it
     serves a payer is decided on message 1; a `BUSY` later in a session
     is what a payee that saw the code and backed out would send, and the
@@ -640,7 +648,7 @@ environment, and SHOULD let applications do so. In one place:
 | Minimum gap between sessions | 1 s | [Connection setup](#connection-setup) |
 | Sessions per rolling window | 30 per 60 s | [Connection setup](#connection-setup) |
 | Code attempts per rolling window, payee and payer | 6 per 60 s | [Connection setup](#connection-setup), [Discovery](#discovery-and-peer-selection) |
-| Code attempts per shared request | 50 | [Connection setup](#connection-setup) |
+| Code attempts per single-use request | 50 | [Connection setup](#connection-setup) |
 | Suspicious code attempts, payee and payer | 4 per 60 s | [Session flow](#session-flow), [Discovery](#discovery-and-peer-selection) |
 | Busy retry delay, retries | 2 s, 12 | [ABORT](#abort) |
 | Connect retry delay, retries | 1 s, 2 | [Discovery](#discovery-and-peer-selection) |
@@ -850,7 +858,7 @@ attacker's patience:
   that does not collect has `K` = 1.
 * `M` is the number of payee sessions that reach their code. They are
   counted whatever their outcome, because an attacker would acknowledge
-  every attempt; at most 6 per minute and 50 per shared request.
+  every attempt; at most 6 per minute, and 50 for a single-use request.
 * `N` is the number of payer sessions in which the payer sent its nonce.
   They are counted whatever their outcome too, because a rogue payee that
   saw the code drops the link or claims to be busy; at most 6 per minute,
@@ -859,11 +867,16 @@ attacker's patience:
   timeout after a session (see [Session flow](#session-flow)), so each
   payee attempt gives the attacker about three payer attempts.
 
-So against one shared request, `P` stays below (4 + 3) · 50 / 2²² ≈ 0.008 %
-(0.005 % for a payer that does not collect), however long the attacker
-tries, and changing BLE identities changes none of these bounds. Matching
-codes alone are not enough either: the user must also pick the attacker's
-request. These figures are for the RECOMMENDED parameters; an application
+So against one single-use request, `P` stays below
+(4 + 3) · 50 / 2²² ≈ 0.008 % (0.005 % for a payer that does not collect),
+however long the attacker tries, and changing BLE identities changes none
+of these bounds. A reusable request has no per-request cap; what bounds
+it is the chance per comparison. Within one comparison timeout the
+per-minute limits allow about three attempts on either side, so a
+comparison accepts an attacker's request with a chance of about
+(4 · 3 + 3) / 2²² ≈ 0.0004 %, and the time between comparisons gains the
+attacker nothing. Matching codes alone are not enough either: the user
+must also pick the attacker's request. These figures are for the RECOMMENDED parameters; an application
 that raises the limits raises the bound accordingly. The construction
 itself has not been formally analysed beyond the SAS literature cited
 above; review of the multi-session argument is welcome.
@@ -925,7 +938,7 @@ distinguishable groups.
 | A nearby attacker advertises the service and serves its own payment request, possibly copying the real amount and description | The comparison code. "Codes differ" excludes that payee | A user who never compares the codes is not protected. Wallets should make the comparison an explicit step, not a passive banner. NFC and QR are unaffected. |
 | Identity of the peer | none: Noise NN only protects the channel against passive listeners | The human comparison of the code is what authenticates the exchange the user picked |
 | Active man in the middle relaying between both devices | The commitment ordering caps success at 2⁻²² per pair of sessions | See the next row |
-| Grinding: repeated sessions until the payee shows a code the payer's user accepts | Both sides count every session that reaches its code, the payee at message 3 and the payer when it sends its nonce: at most 6 per minute each, and 50 per shared request on the payee; the payer holds at most 4 requests for confirmation, each for 20 s; the payee takes a code off its screen after that; both warn | Below 0.008 % per shared request with the RECOMMENDED parameters (see [Rationale](#noise-nn-with-a-commitreveal-comparison-code)); the warnings are heuristics with false positives in busy rooms |
+| Grinding: repeated sessions until the payee shows a code the payer's user accepts | Both sides count every session that reaches its code, the payee at message 3 and the payer when it sends its nonce: at most 6 per minute each, and 50 per single-use request on the payee; the payer holds at most 4 requests for confirmation, each for 20 s; the payee takes a code off its screen after that; both warn | Below 0.008 % per single-use request, and about 0.0004 % per comparison of a reusable one, with the RECOMMENDED parameters (see [Rationale](#noise-nn-with-a-commitreveal-comparison-code)); the warnings are heuristics with false positives in busy rooms |
 | A second payer replacing the code the first payer's user compares | The payee holds a delivered code for the comparison timeout and answers other payers `BUSY` | A held payee answers other payers `BUSY` for up to 20 s. An attacker that completes sessions can renew holds back to back within the per-minute limit and use up the per-request cap, as it could keep the payee busy by stalling sessions; the warning is what the payee's user sees |
 | Replay of an earlier session | Fresh ephemerals and nonces in every session; the code depends on both | none |
 | Passive eavesdropping on the payment request (amount, node id, address) | ChaCha20-Poly1305 from message 2 onwards | The advertisement itself reveals that a payment request is being displayed nearby. Any nearby party can run its own payer session and read the request, amount, description and node id included: encryption does not restrict who the audience is, as anyone can photograph a displayed QR code, and unlike a QR code the radio needs no line of sight. Each such read costs the reader a code attempt and makes a code appear on the payee's screen with nobody paying, which is the payee's cue |

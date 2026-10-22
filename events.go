@@ -238,7 +238,8 @@ type SuspiciousActivity struct {
 // codes and stopped serving over BLE for good, which bounds how often an
 // attacker can try for a matching code however long the share runs. A
 // ShareStarted with BLE off follows; NFC keeps working. Sharing again
-// starts a new budget.
+// starts a new budget. A share with ShareOptions.Reusable never reports
+// it.
 type AttemptLimitReached struct {
 	// Attempts is how many sessions showed a code during the share.
 	Attempts int

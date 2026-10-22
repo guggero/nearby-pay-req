@@ -94,4 +94,18 @@ func TestCodeAttemptLimits(t *testing.T) {
 	}, d.events[len(d.events)-2:])
 	_, ok = d.tryExchange(t, "after")
 	require.False(t, ok)
+
+	// A reusable request has no such cap: every honest payment is an
+	// attempt.
+	d = newDirectSharer(t, Params{MaxCodeAttempts: 3})
+	d.reusable = true
+	for i := range 3 {
+		d.exchange(t, fmt.Sprintf("payer-%d", i), false)
+		d.advance(d.params.SessionRateWindow)
+		require.NoError(t, d.reviewAttempts())
+	}
+	require.False(t, d.exhausted)
+	require.Zero(t, countEvents[AttemptLimitReached](d))
+	_, ok = d.tryExchange(t, "after")
+	require.True(t, ok)
 }

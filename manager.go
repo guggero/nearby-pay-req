@@ -88,6 +88,14 @@ type ShareOptions struct {
 	// donation address. By default a chosen request stops being shared
 	// and Share returns nil.
 	ContinueAfterChosen bool
+
+	// Reusable says the request is one many people pay, such as an
+	// offer or a donation address, so the share is not stopped after
+	// Params.MaxCodeAttempts code attempts (see AttemptLimitReached):
+	// every honest payment is one. The per-minute limit still applies
+	// and is what bounds each comparison. Usually set together with
+	// ContinueAfterChosen.
+	Reusable bool
 }
 
 // FindOptions configures one find.
@@ -271,6 +279,7 @@ func (m *Manager) Share(ctx context.Context, paymentRequest string,
 		tag:                 m.tag,
 		params:              m.cfg.Params,
 		continueAfterChosen: opts.ContinueAfterChosen,
+		reusable:            opts.Reusable,
 		clock:               m.cfg.Clock,
 		rand:                m.cfg.Rand,
 		paymentRequest:      paymentRequest,
