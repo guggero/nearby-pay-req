@@ -183,7 +183,9 @@ err = mgr.Choose(ctx, picked.PeerID, picked.ChosenToken)
   payee learns the code; once at that limit a find waits.
 - **Choose.** It reconnects to the payee and sends the session's token. Only
   the two ends of the session can compute it. It retries a few times; the
-  payment never depends on its result.
+  payment never depends on its result. It takes over the central role, so
+  a collecting find ends with `ErrReplaced` and reports no `OfferExpired`
+  for the other requests: drop the picker when calling `Choose`.
 - **Busy payees.** A payer that finds a payee busy with another payer tries
   again after `Params.BusyRetryDelay` instead of skipping it, long enough to
   outlast a held comparison.
