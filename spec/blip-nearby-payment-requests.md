@@ -516,6 +516,15 @@ most wallets use the same list for recovery phrases, a wallet SHOULD make
 clear that the words are a one-time comparison code and no part of a
 recovery phrase.
 
+The payer's wallet SHOULD give "the codes differ" the same weight as
+"they match", with neither answer selected in advance, and SHOULD show
+the amount and description of the request next to the code, so the user
+checks one screen for both. It SHOULD show how long the comparison lasts.
+The payee's wallet SHOULD tell its user what to do with the code (show it
+to the person paying), since that user is otherwise idle, and SHOULD say
+that no payment arrived yet when it takes a code off the screen (see
+[Session flow](#session-flow)).
+
 #### Choosing a request
 
 When the payer's user has confirmed the codes match and picked a request,
