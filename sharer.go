@@ -414,24 +414,26 @@ func (s *sharer) handleEvent(ev event) error {
 	// first message soon, and only so many payers may wait at once:
 	// each may hold a partly received message.
 	case evCentralReady:
-		conn := &centralConn{maxChunk: ev.maxChunk}
-		mid := s.active != nil && s.active.central == ev.id
-		_, known := s.conns[ev.id]
-		switch {
-		case mid:
-
-		case !known && len(s.conns) >= s.params.MaxCentrals:
+		// A payer subscribing again changes nothing but the chunk
+		// size: its first-message deadline runs from its first
+		// subscription, so it cannot stretch it, and a message in
+		// progress goes on.
+		if conn, known := s.conns[ev.id]; known {
+			conn.maxChunk = ev.maxChunk
+			return nil
+		}
+		if len(s.conns) >= s.params.MaxCentrals {
 			log.Debugf("Too many nearby centrals, dropping %s",
 				ev.id)
 			s.radio.disconnectCentral(ev.id)
 			return nil
-
-		default:
-			conn.firstBy = s.clock.Now().Add(
-				s.params.FirstMessageTimeout,
-			)
 		}
-		s.conns[ev.id] = conn
+		s.conns[ev.id] = &centralConn{
+			maxChunk: ev.maxChunk,
+			firstBy: s.clock.Now().Add(
+				s.params.FirstMessageTimeout,
+			),
+		}
 
 		return nil
 

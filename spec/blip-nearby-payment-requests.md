@@ -237,8 +237,9 @@ The payee:
     is what a payee that saw the code and backed out would send, and the
     payer treats it as such (see [Session flow](#session-flow)).
   - MUST drop a payer that has not sent its first complete message within a
-    short time of enabling notifications (3 seconds is RECOMMENDED),
-    however many fragments it sent, and SHOULD bound the number of payers
+    short time of first enabling notifications (3 seconds is RECOMMENDED),
+    however many fragments it sent and however often it enabled
+    notifications again, and SHOULD bound the number of payers
     connected without a session (8 is RECOMMENDED), so silent or trickling
     connections cannot hold resources indefinitely.
 
