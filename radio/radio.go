@@ -87,7 +87,9 @@ type Radio interface {
 	// DisconnectCentral drops one central. A Notify to it blocked
 	// meanwhile fails at once. CoreBluetooth cannot force a disconnect,
 	// so on iOS the radio stops serving that central and ignores its
-	// further writes.
+	// further writes. Such a central no longer counts towards the
+	// Manager's cap on payers without a session, so on iOS the OS's own
+	// link limit is what bounds centrals that refuse to leave.
 	DisconnectCentral(centralID string)
 
 	// StartScan scans for serviceUUID and reports every matching
