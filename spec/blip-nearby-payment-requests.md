@@ -412,10 +412,12 @@ words in that order, in lower case, joined by one ASCII space.
 
 The payee:
   - MUST draw `Nb` and send `C` in message 2, before it has received `Na`.
-  - On message 3, MUST compute `code`, and SHOULD display it straight away,
-    replacing any code it displayed for an earlier session. Message 3 is
-    where a session becomes a code attempt (see
-    [Connection setup](#connection-setup)).
+  - On message 3, MUST compute `code`, and SHOULD display it once it has
+    sent message 4, which is the earliest the payer can show it,
+    replacing the code of an earlier session (none can be held at that
+    point, see below). Message 3 is where a session becomes a code
+    attempt (see [Connection setup](#connection-setup)), whether or not
+    message 4 goes out.
   - MUST send `Nb` and `payment_request` in message 4, and only after it
     received message 3.
   - On message 5 with `ack` = 0, SHOULD tell the user the request was
