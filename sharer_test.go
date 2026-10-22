@@ -202,7 +202,8 @@ func TestFindStateBounded(t *testing.T) {
 		known:      make(map[string]struct{}),
 		failed:     make(map[string]bool),
 		received:   make(map[string]receivedOffer),
-		offers:     &offerBudget{max: 4, window: time.Minute},
+		offers:     &budget{max: 4, window: time.Minute},
+		attempts:   &budget{max: 6, window: time.Minute},
 		send: func(ev FindEvent) error {
 			sent = append(sent, ev)
 			return nil

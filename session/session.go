@@ -179,6 +179,12 @@ type Output struct {
 	// nonces, which only ever travel encrypted.
 	ChosenToken *[wire.ChosenTokenLen]byte
 
+	// NonceSent is set on the payer when Send carries its nonce. From
+	// then on the payee can compute the code, so the session is a code
+	// attempt whatever comes of it, as it is for the payee once Code is
+	// set.
+	NonceSent bool
+
 	// PaymentRequest is set on the payer once the request arrived.
 	PaymentRequest string
 

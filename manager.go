@@ -116,10 +116,15 @@ type FindOptions struct {
 // wrapper and the emulated NFC tag, and runs at most one share and one find
 // at a time; starting another of the same kind replaces the running one.
 type Manager struct {
-	cfg    Config
-	radio  *radioMux
-	tag    *hce.Tag
-	offers *offerBudget
+	cfg   Config
+	radio *radioMux
+	tag   *hce.Tag
+
+	// offers and attempts bound the payer across finds: the requests
+	// it holds for confirmation and the sessions in which it revealed
+	// its nonce.
+	offers   *budget
+	attempts *budget
 
 	mu         sync.Mutex
 	share      *activeCall
@@ -147,9 +152,13 @@ func New(cfg Config) *Manager {
 		cfg:        cfg,
 		tag:        hce.New(),
 		statusSubs: make(map[chan struct{}]struct{}),
-		offers: &offerBudget{
+		offers: &budget{
 			max:    cfg.Params.MaxOffers,
 			window: cfg.Params.ComparisonTimeout,
+		},
+		attempts: &budget{
+			max:    cfg.Params.MaxCodeAttemptsPerWindow,
+			window: cfg.Params.SessionRateWindow,
 		},
 	}
 	if cfg.Radio != nil {
@@ -311,6 +320,7 @@ func (m *Manager) Find(ctx context.Context, opts FindOptions,
 		params:        m.cfg.Params,
 		collect:       opts.Collect,
 		offers:        m.offers,
+		attempts:      m.attempts,
 		exclude:       exclude,
 		validate:      validate,
 		availability:  m.findAvailability,

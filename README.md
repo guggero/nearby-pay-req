@@ -32,11 +32,12 @@ vectors byte for byte.
   Both sides derive the code from the handshake hash and both nonces. The
   payee commits to its nonce before it learns the payer's, so a man in the
   middle cannot grind for a matching code offline: each pair of sessions
-  matches with probability 2⁻²². Repeating sessions is bounded too: the
-  payee counts every session that shows a code (6 per minute, 50 per
-  shared request) and a payer holds at most 4 requests for confirmation at
-  a time, which keeps an attacker's chance below 0.005 % per shared
-  request.
+  matches with probability 2⁻²². Repeating sessions is bounded on both
+  sides: each wallet counts every session whose code its peer could
+  compute, the payee from message 3 and the payer from sending its nonce,
+  and allows 6 per minute (the payee also 50 per shared request); a payer
+  holds at most 4 requests for confirmation at a time. That keeps an
+  attacker's chance below 0.008 % per shared request.
 - **NFC carrier (Android payees).** The same string is served as a read-only
   NFC Forum Type 4 Tag holding one NDEF URI record. Any NFC reader, wallet or
   not, sees exactly what the QR code shows. The physical tap is the
@@ -109,6 +110,11 @@ err = mgr.Find(ctx, nearby.FindOptions{
 })
 ```
 
+A find reports `SuspiciousActivity` as a share does, when many of its
+sessions reached a code within a minute: a rogue payee learns the code
+once the payer sent its nonce and can back out of a session whose code it
+cannot use, so every such session counts, delivered or not.
+
 `Share` and `Find` block and call `emit` on the calling goroutine, so they
 map directly onto a server-streaming RPC handler.
 
@@ -169,7 +175,10 @@ err = mgr.Choose(ctx, picked.PeerID, picked.ChosenToken)
   a collecting find reports `OfferExpired` then, drop the request from the
   picker. A Manager hands out at most `Params.MaxOffers` (4) requests per
   comparison timeout, across finds: every request the user may still
-  confirm is a code an attacker may aim for.
+  confirm is a code an attacker may aim for. It also runs at most
+  `Params.MaxCodeAttemptsPerWindow` (6) sessions per minute in which it
+  revealed its nonce, whatever came of them, since that is where a rogue
+  payee learns the code; once at that limit a find waits.
 - **Choose.** It reconnects to the payee and sends the session's token. Only
   the two ends of the session can compute it. It retries a few times; the
   payment never depends on its result.

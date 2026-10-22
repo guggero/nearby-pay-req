@@ -155,8 +155,8 @@ type ShareEvent interface {
 }
 
 // FindEvent is one event of a running find. It is one of Scanning,
-// AvailabilityChanged, TooFar, Connecting, SessionFailed, Received or
-// OfferExpired.
+// AvailabilityChanged, TooFar, Connecting, SessionFailed, Received,
+// OfferExpired or SuspiciousActivity.
 type FindEvent interface {
 	findEvent()
 }
@@ -217,14 +217,17 @@ type SessionFailed struct {
 	Reason FailureReason
 }
 
-// SuspiciousActivity warns that unusually many sessions showed a code within
-// Window, which is what a man in the middle repeating sessions until a code
-// matches looks like. Every session that reached its code counts, whether
-// its payer acknowledged the request or not: an attacker would acknowledge
-// every attempt. It is a heuristic: several honest payers in quick
-// succession trigger it too. It is sent at most once per Window.
+// SuspiciousActivity warns that unusually many sessions reached a code
+// within Window, which is what a man in the middle repeating sessions until
+// a code matches looks like. On a share every session that computed its
+// code counts, whether its payer acknowledged the request or not: an
+// attacker would acknowledge every attempt. On a find every session in
+// which the payer revealed its nonce counts, whether a request arrived or
+// not: a rogue payee that saw the code and backed out looks like a lost
+// connection. It is a heuristic: several honest peers in quick succession
+// trigger it too. It is sent at most once per Window.
 type SuspiciousActivity struct {
-	// Sessions is how many sessions showed a code within Window.
+	// Sessions is how many sessions reached a code within Window.
 	Sessions int
 
 	// Window is the rolling window Sessions was counted in.
@@ -308,6 +311,7 @@ func (ComparisonExpired) shareEvent()   {}
 func (SessionFailed) shareEvent()       {}
 func (SessionFailed) findEvent()        {}
 func (SuspiciousActivity) shareEvent()  {}
+func (SuspiciousActivity) findEvent()   {}
 func (AttemptLimitReached) shareEvent() {}
 func (NFCRead) shareEvent()             {}
 func (Scanning) findEvent()             {}

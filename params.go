@@ -85,10 +85,13 @@ type Params struct {
 	SessionRateWindow time.Duration
 
 	// MaxCodeAttemptsPerWindow caps the sessions per SessionRateWindow
-	// that may reach their code, whatever their outcome. Each is one
-	// chance in a million for a man in the middle; honest payers rarely
-	// need more than a few, since every delivered code is held for
-	// ComparisonTimeout.
+	// that reach their code, whatever their outcome, on both sides: a
+	// payee counts a session once it computed the code, a payer once it
+	// revealed its nonce, which is when a rogue payee can compute it.
+	// Each is one chance in four million for a man in the middle.
+	// Honest peers rarely need more than a few: every delivered code is
+	// held for ComparisonTimeout. The payer's count is kept across
+	// finds; once at the cap, a find waits for the window.
 	MaxCodeAttemptsPerWindow int
 
 	// MaxOffers caps the requests a payer may receive within one
@@ -105,8 +108,9 @@ type Params struct {
 	// MaxCodeAttempts in a million per share however long it runs.
 	MaxCodeAttempts int
 
-	// SuspiciousThreshold is how many sessions that showed a code,
-	// within SuspiciousWindow, raise a SuspiciousActivity.
+	// SuspiciousThreshold is how many code attempts within
+	// SuspiciousWindow raise a SuspiciousActivity, on a share and on a
+	// find alike.
 	SuspiciousThreshold int
 
 	// SuspiciousWindow is the rolling window of SuspiciousThreshold.

@@ -86,7 +86,7 @@ func (s *PayerSession) handle(raw []byte) (Output, error) {
 		)
 	}
 	if msg.Type == wire.TypeAbort {
-		return Output{}, abortFailure(msg.Body)
+		return Output{}, s.abortFailure(msg.Body)
 	}
 	if msg.Version != wire.Version1 {
 		return abortOutput(wire.AbortVersionUnsupported),
@@ -111,6 +111,20 @@ func (s *PayerSession) handle(raw []byte) (Output, error) {
 		return abortOutput(wire.AbortProtocolError),
 			failure(ReasonProtocol, "unexpected %v", msg.Type)
 	}
+}
+
+// abortFailure maps the payee's ABORT onto a failure. A payee decides
+// whether it can serve us when it reads message 1, so BUSY is only honest
+// in answer to it. Once we revealed our nonce the payee knows our code, and
+// a BUSY then is a payee that saw the code and backed out: a failed session,
+// not one to retry.
+func (s *PayerSession) abortFailure(body []byte) *Error {
+	err := abortFailure(body)
+	if err.Reason == ReasonBusy && s.state != payerAwaitEEE {
+		err.Reason = ReasonPeerAborted
+	}
+
+	return err
 }
 
 // handleNoiseEEE completes the handshake, keeps the payee's commitment and
@@ -152,7 +166,7 @@ func (s *PayerSession) handleNoiseEEE(msg wire.Message) (Output, error) {
 	}
 	s.state = payerAwaitReveal
 
-	return Output{Send: [][]byte{nonce}}, nil
+	return Output{Send: [][]byte{nonce}, NonceSent: true}, nil
 }
 
 // handleReveal checks the revealed nonce against the commitment and derives

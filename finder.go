@@ -91,8 +91,12 @@ type finder struct {
 	// revisit the sharer; afterwards it reports OfferExpired and may.
 	received map[string]receivedOffer
 
-	// offers is the Manager's budget of offers, shared by every find.
-	offers *offerBudget
+	// offers and attempts are the Manager's budgets of held requests and
+	// of code attempts, shared by every find; warnedAt is when the find
+	// last warned about the latter.
+	offers   *budget
+	attempts *budget
+	warnedAt time.Time
 
 	// expire fires at expireAt, when the earliest received offer
 	// expires.
@@ -401,15 +405,20 @@ func (f *finder) pick() error {
 		return nil
 	}
 
-	// Keep re-evaluating while sharers are visible but too far away;
-	// someone walking up should be picked without restarting.
-	// The payer holds as many offers as it may: connect once the
-	// oldest one expired.
-	if free := f.offers.nextFree(now); free.After(now) {
-		log.Debugf("Nearby offer budget used up until %v", free)
+	// The payer holds as many offers as it may, or revealed its nonce
+	// as often as it may: connect once the oldest aged out.
+	free := f.offers.nextFree(now)
+	if next := f.attempts.nextFree(now); next.After(free) {
+		free = next
+	}
+	if free.After(now) {
+		log.Debugf("Nearby payer budget used up until %v", free)
 		f.window = f.clock.TickAfter(free.Sub(now))
 		return nil
 	}
+
+	// Keep re-evaluating while sharers are visible but too far away;
+	// someone walking up should be picked without restarting.
 
 	if bestDB < float64(f.params.RSSIFloor) {
 		f.window = f.clock.TickAfter(f.params.CollectWindow)
@@ -499,6 +508,15 @@ func (f *finder) handleNotify(chunk []byte) (bool, error) {
 		return false, f.failActive(failureReason(err))
 	}
 
+	// Once our nonce goes out the sharer can compute the code, so the
+	// session is a code attempt even if the write fails: a rogue sharer
+	// that sees a code it does not like need only drop the link.
+	if out.NonceSent {
+		if err := f.recordCodeAttempt(); err != nil {
+			return false, err
+		}
+	}
+
 	// A reply that didn't reach the sharer leaves it waiting for us;
 	// give up on it now rather than at the session timeout.
 	if err := f.writeAll(out.Send, f.active.deadlineAt); err != nil {
@@ -582,6 +600,28 @@ func (f *finder) handleNotify(chunk []byte) (bool, error) {
 	}
 
 	return false, nil
+}
+
+// recordCodeAttempt counts a session in which the payer revealed its nonce
+// and warns once SuspiciousThreshold of them fell within SuspiciousWindow,
+// at most once per window. The count lives on the Manager, so it survives
+// restarting the search.
+func (f *finder) recordCodeAttempt() error {
+	now := f.clock.Now()
+	f.attempts.take(now)
+
+	recent := f.attempts.recent(now, f.params.SuspiciousWindow)
+	if recent < f.params.SuspiciousThreshold ||
+		now.Sub(f.warnedAt) < f.params.SuspiciousWindow {
+
+		return nil
+	}
+	f.warnedAt = now
+
+	return f.send(SuspiciousActivity{
+		Sessions: recent,
+		Window:   f.params.SuspiciousWindow,
+	})
 }
 
 // scheduleExpiry arms expire for the earliest received offer to expire.

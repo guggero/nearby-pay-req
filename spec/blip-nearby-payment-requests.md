@@ -185,6 +185,15 @@ The payer:
     [Security considerations](#security-considerations)). Once at the
     limit, it MUST wait for the oldest comparison to end before running
     another session.
+  - MUST count every session in which it sent message 3 as a *code
+    attempt*, whatever came of it: from message 3 on the payee, honest or
+    not, can compute the code (see [Session flow](#session-flow)). It
+    MUST limit its code attempts (6 per rolling 60 seconds is
+    RECOMMENDED), counted across searches, and once at the limit MUST
+    wait for the window to pass before running another session.
+  - SHOULD warn its user if four or more of its sessions within 60
+    seconds were code attempts. The warning is a heuristic; collecting
+    from several payees triggers it as well.
   - SHOULD bound the number of distinct payees it tracks in one search
     (64 is RECOMMENDED) and ignore new ones beyond that, rather than
     forgetting a payee that failed or did not match.
@@ -223,6 +232,10 @@ The payee:
     one request, after which it MUST stop serving that request over BLE.
     A session counts once it reached its code, whatever its outcome. The
     payee answers sessions beyond the per-minute limit with `ABORT(BUSY)`.
+  - MUST NOT send `ABORT(BUSY)` after it sent message 2. Whether it
+    serves a payer is decided on message 1; a `BUSY` later in a session
+    is what a payee that saw the code and backed out would send, and the
+    payer treats it as such (see [Session flow](#session-flow)).
   - MUST drop a payer that has not sent its first complete message within a
     short time of enabling notifications (3 seconds is RECOMMENDED),
     however many fragments it sent, and SHOULD bound the number of payers
@@ -429,7 +442,12 @@ The payee:
 The payer:
   - MUST send message 1 as the first message on a connection.
   - MUST NOT draw or send `Na` before it has received and successfully
-    processed message 2.
+    processed message 2. Sending message 3 makes the session one of the
+    payer's code attempts (see
+    [Discovery and peer selection](#discovery-and-peer-selection)).
+  - MUST treat an `ABORT(BUSY)` received after it sent message 3 as a
+    failed session, not as a busy payee: an honest payee is never busy
+    after it accepted message 1.
   - On message 4:
     - MUST check, in constant time, that `SHA-256(COMMIT_TAG ‖ Nb)` equals
       `C`. If it does not, the payer MUST send `ABORT(PROTOCOL_ERROR)`, fail
@@ -567,11 +585,13 @@ A receiver of an `ABORT`:
   - MUST NOT reply with an `ABORT`.
   - MUST treat an unknown reason code as a generic failure.
 
-A payer receiving `ABORT(BUSY)` SHOULD move on to the next candidate payee and
-SHOULD retry the same payee after a delay (2 seconds is RECOMMENDED), a
-limited number of times (12 is RECOMMENDED, so the retries outlast a held
-comparison). With several payers in one room this is what lets each of
-them get the request in turn. A payer receiving
+A payer receiving `ABORT(BUSY)` in answer to message 1 SHOULD move on to
+the next candidate payee and SHOULD retry the same payee after a delay
+(2 seconds is RECOMMENDED), a limited number of times (12 is RECOMMENDED,
+so the retries outlast a held comparison). With several payers in one room
+this is what lets each of them get the request in turn. A `BUSY` later in
+a session is a failed session (see [Session flow](#session-flow)). A payer
+receiving
 `ABORT(VERSION_UNSUPPORTED)` MAY open a new session using the indicated
 version if it supports that version.
 
@@ -595,9 +615,9 @@ environment, and SHOULD let applications do so. In one place:
 | Payees tracked per search | 64 | [Discovery](#discovery-and-peer-selection) |
 | Minimum gap between sessions | 1 s | [Connection setup](#connection-setup) |
 | Sessions per rolling window | 30 per 60 s | [Connection setup](#connection-setup) |
-| Code attempts per rolling window | 6 per 60 s | [Connection setup](#connection-setup) |
+| Code attempts per rolling window, payee and payer | 6 per 60 s | [Connection setup](#connection-setup), [Discovery](#discovery-and-peer-selection) |
 | Code attempts per shared request | 50 | [Connection setup](#connection-setup) |
-| Suspicious code attempts | 4 per 60 s | [Session flow](#session-flow) |
+| Suspicious code attempts, payee and payer | 4 per 60 s | [Session flow](#session-flow), [Discovery](#discovery-and-peer-selection) |
 | Busy retry delay, retries | 2 s, 12 | [ABORT](#abort) |
 | `chosen_token` retention | 2 min | [Choosing a request](#choosing-a-request) |
 
@@ -781,19 +801,23 @@ authenticated key agreement by Vaudenay:
 
 Each pairing of one payer session with one payee session therefore
 matches with probability 2⁻²² (about 1 in 4.2 million), and no offline work
-improves on that. What remains is repetition: an attacker completes its own
-sessions with the payer (posing as payees) and with the genuine payee
-(posing as a payer), and wins when the genuine payee displays a code equal
-to one the payer's user will accept for an attacker request. With `K` such
-codes acceptable at once and `M` payee sessions that reach their code, the
+improves on that. What remains is repetition. The attacker can reroll
+either code: the payee's, by running sessions with the genuine payee as a
+payer, and the payer's, by running sessions with the genuine payer as a
+payee. In both it learns the code at message 3, before it has delivered
+anything, and can back out of a session whose code it cannot use. It wins
+when the genuine payee displays a code equal to one the payer's user will
+accept for an attacker request. With `K` such codes acceptable at once,
+`M` payee sessions and `N` payer sessions that reach their code, the
 chance is about
 
 ```
-P = 1 − (1 − K / 2²²)^M  ≈  K · M / 2²²
+P  ≈  (K · M + N) / 2²²
 ```
 
 (the code takes whole bits of a hash, so every one of the 2²² codes is
-equally likely). The protocol bounds both factors instead of relying on the
+equally likely; the payer term has no `K` because the payee shows one code
+at a time). The protocol bounds every factor instead of relying on the
 attacker's patience:
 
 * `K` is the number of requests a payer holds for confirmation: at most 4
@@ -802,11 +826,18 @@ attacker's patience:
 * `M` is the number of payee sessions that reach their code. They are
   counted whatever their outcome, because an attacker would acknowledge
   every attempt; at most 6 per minute and 50 per shared request.
+* `N` is the number of payer sessions in which the payer sent its nonce.
+  They are counted whatever their outcome too, because a rogue payee that
+  saw the code drops the link or claims to be busy; at most 6 per minute,
+  across searches. A payer attempt only helps the attacker while the
+  genuine payee displays a code, which it does for at most the comparison
+  timeout after a session (see [Session flow](#session-flow)), so each
+  payee attempt gives the attacker about three payer attempts.
 
-So against one shared request, `P` stays below 4 · 50 / 2²² ≈ 0.005 %
-(0.0012 % for a payer that does not collect), however long the attacker
-tries, and changing BLE identities changes neither bound. Matching codes
-alone are not enough either: the user must also pick the attacker's
+So against one shared request, `P` stays below (4 + 3) · 50 / 2²² ≈ 0.008 %
+(0.005 % for a payer that does not collect), however long the attacker
+tries, and changing BLE identities changes none of these bounds. Matching
+codes alone are not enough either: the user must also pick the attacker's
 request. These figures are for the RECOMMENDED parameters; an application
 that raises the limits raises the bound accordingly. The construction
 itself has not been formally analysed beyond the SAS literature cited
@@ -869,7 +900,7 @@ distinguishable groups.
 | A nearby attacker advertises the service and serves its own payment request, possibly copying the real amount and description | The comparison code. "Codes differ" excludes that payee | A user who never compares the codes is not protected. Wallets should make the comparison an explicit step, not a passive banner. NFC and QR are unaffected. |
 | Identity of the peer | none: Noise NN only protects the channel against passive listeners | The human comparison of the code is what authenticates the exchange the user picked |
 | Active man in the middle relaying between both devices | The commitment ordering caps success at 2⁻²² per pair of sessions | See the next row |
-| Grinding: repeated sessions until the payee shows a code the payer's user accepts | The payer holds at most 4 requests for confirmation, each for 20 s; the payee counts every session that reaches its code, at most 6 per minute and 50 per shared request; the warning | Below 0.005 % per shared request with the RECOMMENDED parameters (see [Rationale](#noise-nn-with-a-commitreveal-comparison-code)); the warning is a heuristic with false positives in busy rooms |
+| Grinding: repeated sessions until the payee shows a code the payer's user accepts | Both sides count every session that reaches its code, the payee at message 3 and the payer when it sends its nonce: at most 6 per minute each, and 50 per shared request on the payee; the payer holds at most 4 requests for confirmation, each for 20 s; the payee takes a code off its screen after that; both warn | Below 0.008 % per shared request with the RECOMMENDED parameters (see [Rationale](#noise-nn-with-a-commitreveal-comparison-code)); the warnings are heuristics with false positives in busy rooms |
 | A second payer replacing the code the first payer's user compares | The payee holds a delivered code for the comparison timeout and answers other payers `BUSY` | A held payee answers other payers `BUSY` for up to 20 s; an attacker can renew holds only within the code-attempt limits |
 | Replay of an earlier session | Fresh ephemerals and nonces in every session; the code depends on both | none |
 | Passive eavesdropping on the payment request (amount, node id, address) | ChaCha20-Poly1305 from message 2 onwards | The advertisement itself reveals that a payment request is being displayed nearby. Any nearby party can run its own payer session and read the request: encryption does not restrict who the audience is, exactly as anyone can photograph a displayed QR code |

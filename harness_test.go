@@ -409,3 +409,96 @@ func (r *rogue) runUntilCode(t *testing.T, peer string) *session.PayerSession {
 
 	return sess
 }
+
+// roguePayee is a peripheral driven by hand, for playing a misbehaving
+// payee against a finder. It runs a genuine payee session up to the point
+// where it learns the payer's code, then backs out: with an ABORT carrying
+// abort, or by dropping the link when abort is zero. That is what a man in
+// the middle does with a code it cannot use.
+type roguePayee struct {
+	radio *nearbytest.Radio
+	abort wire.AbortReason
+
+	mu    sync.Mutex
+	chunk int
+	reasm wire.Reassembler
+	sess  *session.PayeeSession
+	codes int
+}
+
+// newRoguePayee adds a hand-driven, advertising payee to world.
+func newRoguePayee(t *testing.T, world *nearbytest.World, id string,
+	abort wire.AbortReason) *roguePayee {
+
+	t.Helper()
+
+	p := &roguePayee{radio: world.NewRadio(id), abort: abort}
+	require.NoError(t, p.radio.StartAdvertising("", "", "", p))
+
+	return p
+}
+
+// codesSeen returns how many payer codes the rogue learned.
+func (p *roguePayee) codesSeen() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.codes
+}
+
+// OnCentralReady implements radio.PeripheralCallback.
+func (p *roguePayee) OnCentralReady(_ string, maxChunk int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.chunk = maxChunk
+	p.reasm = wire.Reassembler{}
+	p.sess, _ = session.NewPayeeSession(session.Config{
+		Prologue: session.Prologue(serviceUUIDBytes()),
+		Rand:     rand.Reader,
+	}, testRequest)
+}
+
+// OnWrite implements radio.PeripheralCallback.
+func (p *roguePayee) OnWrite(central string, chunk []byte) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	msg, err := p.reasm.Add(chunk)
+	if err != nil || msg == nil {
+		return
+	}
+	out, err := p.sess.Handle(msg)
+	if err != nil {
+		return
+	}
+	if out.Code == "" {
+		for _, m := range out.Send {
+			p.notify(central, m)
+		}
+		return
+	}
+
+	p.codes++
+	if p.abort == 0 {
+		p.radio.DisconnectCentral(central)
+		return
+	}
+	p.notify(central, wire.EncodeAbort(p.abort))
+}
+
+// notify sends one message to a payer.
+func (p *roguePayee) notify(central string, msg []byte) {
+	chunks, _ := wire.Chunk(msg, p.chunk)
+	for _, c := range chunks {
+		_ = p.radio.Notify(central, c, 1000)
+	}
+}
+
+// OnCentralGone implements radio.PeripheralCallback.
+func (p *roguePayee) OnCentralGone(string) {}
+
+// OnAdvertisingFailed implements radio.PeripheralCallback.
+func (p *roguePayee) OnAdvertisingFailed(string) {}
+
+var _ radio.PeripheralCallback = (*roguePayee)(nil)

@@ -496,3 +496,25 @@ func TestCodeDistinctPerSession(t *testing.T) {
 	}
 	require.Greater(t, len(codes), 15)
 }
+
+// TestBusyAfterNonce checks that a BUSY is only a busy payee before the
+// payer revealed its nonce; afterwards the payee knows the code, and a BUSY
+// is a payee backing out of a session it does not like.
+func TestBusyAfterNonce(t *testing.T) {
+	t.Parallel()
+
+	payer, payee := newPair(
+		t, &detRand{seed: []byte("a")}, &detRand{seed: []byte("b")},
+		testRequest,
+	)
+	out, err := payer.Start()
+	require.NoError(t, err)
+	out, err = payee.Handle(onlyMessage(t, out))
+	require.NoError(t, err)
+	out, err = payer.Handle(onlyMessage(t, out))
+	require.NoError(t, err)
+	require.True(t, out.NonceSent)
+
+	_, err = payer.Handle(wire.EncodeAbort(wire.AbortBusy))
+	require.Equal(t, ReasonPeerAborted, ReasonOf(err))
+}
