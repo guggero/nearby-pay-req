@@ -474,7 +474,14 @@ The payer:
 Either side:
   - MUST fail the session if it does not complete within a session timeout,
     measured from the payer's write of message 1 to the payee's receipt of
-    message 5. 10 seconds is RECOMMENDED.
+    message 5. 10 seconds is RECOMMENDED. That assumes an ATT MTU well
+    above the default of 23: message 4 for an 8192-byte request is 8248
+    bytes, or 459 chunks at the smallest chunk size, and many phones
+    deliver one notification per connection interval, which at 30 ms is
+    14 seconds. A payer SHOULD request the largest MTU it can (see
+    [Connection setup](#connection-setup)), a payee SHOULD keep requests
+    as short as its payment format allows, and an implementation MAY
+    lengthen the timeout with the message length.
   - MUST fail the session, and SHOULD disconnect, on any `PROTOCOL_ERROR`.
     Where a notification or write is still possible, it SHOULD send
     `ABORT(PROTOCOL_ERROR)` first.

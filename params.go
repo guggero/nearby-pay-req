@@ -44,7 +44,9 @@ const (
 // also fall back to the default.
 type Params struct {
 	// SessionTimeout bounds one whole exchange, from the payer's first
-	// message to its acknowledgement, on both sides.
+	// message to its acknowledgement, on both sides. The default assumes
+	// an MTU well above 23: a request of the maximum length takes 459
+	// chunks at the smallest chunk size, which can exceed 10 s.
 	SessionTimeout time.Duration
 
 	// ConnectTimeout bounds connecting, service discovery and
