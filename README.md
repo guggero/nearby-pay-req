@@ -23,11 +23,13 @@ vectors byte for byte.
 - **BLE carrier.** The payee runs a GATT server on a fixed service UUID and
   advertises it without a name or manufacturer data. The payer picks the
   closest advertiser by smoothed RSSI, connects and runs five messages:
-  1. A `Noise_NN_25519_ChaChaPoly_SHA256` handshake. The payee's reply
-     carries a commitment `SHA-256(tag ‖ Nb)` to its nonce.
-  2. The payer sends its nonce `Na`.
-  3. The payee reveals `Nb` together with the payment request.
-  4. The payer acknowledges.
+  1. The payer sends its ephemeral key, opening a
+     `Noise_NN_25519_ChaChaPoly_SHA256` handshake.
+  2. The payee answers with its own key and, encrypted, a commitment
+     `SHA-256(tag ‖ Nb)` to its nonce.
+  3. The payer sends its nonce `Na`.
+  4. The payee reveals `Nb` together with the payment request.
+  5. The payer acknowledges.
 
   Both sides derive the code from the handshake hash and both nonces. The
   payee commits to its nonce before it learns the payer's, so a man in the
