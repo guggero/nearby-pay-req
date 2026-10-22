@@ -8,26 +8,45 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # Cancel any previous workflows if they are from a PR or push.
+  group: ${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  # Keep in sync with the go directive in go.mod.
+  GO_VERSION: 1.26.5
+
 jobs:
-  check:
+  ########################
+  # Static checks (ubuntu-latest)
+  ########################
+  static-checks:
+    name: Static Checks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - &checkout
+        name: Git checkout
+        uses: actions/checkout@v5
 
-      - uses: actions/setup-go@v5
+      - name: Setup Go
+        uses: ./.github/actions/setup-go
         with:
-          go-version-file: go.mod
+          go-version: '${{ env.GO_VERSION }}'
+          key-prefix: 'static'
 
       - name: Build
         run: make build
 
-      - name: Lint
-        uses: golangci/golangci-lint-action@v8
-        with:
-          version: v2.9.0
+      - name: Verify formatting
+        run: make fmt-verify
 
-      - name: Unit tests (race)
-        run: make unit-race
+      - name: Lint
+        run: make lint
 
       - name: Test vectors are reproducible
         run: |
@@ -38,3 +57,21 @@ jobs:
         run: |
           make tidy
           git diff --exit-code go.mod go.sum spec/gen/go.mod spec/gen/go.sum
+
+  ########################
+  # Unit tests (ubuntu-latest)
+  ########################
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - *checkout
+
+      - name: Setup Go
+        uses: ./.github/actions/setup-go
+        with:
+          go-version: '${{ env.GO_VERSION }}'
+          key-prefix: 'unit'
+
+      - name: Unit tests (race)
+        run: make unit

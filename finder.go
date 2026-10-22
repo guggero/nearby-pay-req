@@ -192,9 +192,7 @@ func (f *finder) run(ctx context.Context) error {
 		// Nothing worked for a while. Say so, but keep looking.
 		case <-f.giveUp:
 			f.giveUp = nil
-			err := f.sendFailed(
-				FailureTimeout,
-			)
+			err := f.sendFailed(FailureTimeout)
 			if err != nil {
 				return err
 			}
@@ -323,18 +321,14 @@ func (f *finder) handleEvent(ev event) (bool, error) {
 		log.Debugf("Nearby sharer %s disconnected: %s", ev.id,
 			ev.reason)
 
-		return false, f.failActive(
-			FailureConnectFailed,
-		)
+		return false, f.failActive(FailureConnectFailed)
 
 	// The OS stopped our scan; the client restarts the find. The dead
 	// scan must not be reused by that next find.
 	case evScanFailed:
 		log.Warnf("Nearby scan failed: %s", ev.reason)
 		f.radio.scanFailed(ev.scanGen)
-		err := f.sendFailed(
-			FailureRadioError,
-		)
+		err := f.sendFailed(FailureRadioError)
 		if err != nil {
 			return false, err
 		}
@@ -450,9 +444,7 @@ func (f *finder) pick() error {
 	f.active.connID = connID
 	if err != nil {
 		log.Debugf("Connecting to %s failed: %v", best, err)
-		return f.failActive(
-			FailureConnectFailed,
-		)
+		return f.failActive(FailureConnectFailed)
 	}
 
 	return nil
@@ -553,9 +545,7 @@ func (f *finder) handleNotify(chunk []byte) (bool, error) {
 			}
 		}
 
-		return false, f.failActive(
-			FailurePayloadInvalid,
-		)
+		return false, f.failActive(FailurePayloadInvalid)
 	}
 
 	// Without the acknowledgement the sharer never counts the request
@@ -694,8 +684,9 @@ func (f *finder) failActive(reason FailureReason) error {
 	delete(f.candidates, peer)
 	f.radio.disconnect(peer, connID)
 
-	linkFailed := !connected && (reason == FailureConnectFailed ||
-		reason == FailureTimeout)
+	linkFailed := !connected &&
+		(reason == FailureConnectFailed ||
+			reason == FailureTimeout)
 	switch {
 	case reason == FailurePeerBusy &&
 		f.busyRetries[peer] < f.params.MaxBusyRetries:
@@ -707,9 +698,7 @@ func (f *finder) failActive(reason FailureReason) error {
 		f.connectRetries[peer] < f.params.MaxConnectRetries:
 
 		f.connectRetries[peer]++
-		f.retryAt[peer] = f.clock.Now().Add(
-			f.params.ConnectRetryDelay,
-		)
+		f.retryAt[peer] = f.clock.Now().Add(f.params.ConnectRetryDelay)
 
 	default:
 		f.failed[peer] = true

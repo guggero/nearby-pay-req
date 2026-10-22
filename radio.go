@@ -266,8 +266,8 @@ func (r *radioMux) connect(peer string) (int, error) {
 
 // write writes one chunk on connection connID for owner, blocking for at
 // most timeout.
-func (r *radioMux) write(owner uint64, peer string, connID int,
-	chunk []byte, timeout time.Duration) error {
+func (r *radioMux) write(owner uint64, peer string, connID int, chunk []byte,
+	timeout time.Duration) error {
 
 	op := &inflight{owner: owner, peer: peer, connID: connID}
 	r.mu.Lock()
@@ -540,9 +540,7 @@ func (c *centralCallback) OnAdvertisement(peerID string, rssi int) {
 // OnConnected implements radio.CentralCallback. Connection events are
 // routed whatever scan they arrive through: a connection outlives the scan
 // it was found by, and its connID tells its owner apart.
-func (c *centralCallback) OnConnected(peerID string, connID int,
-	maxChunk int) {
-
+func (c *centralCallback) OnConnected(peerID string, connID int, maxChunk int) {
 	c.r.dispatchFind(event{
 		kind:     evConnected,
 		id:       peerID,

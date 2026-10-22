@@ -28,8 +28,8 @@ var (
 
 	// bip39EnglishSHA256 is the SHA-256 of english.txt as published with
 	// BIP 39.
-	bip39EnglishSHA256 = "2f5eed53a4727b4bf8880d8f3f199efc90e58503" +
-		"646d9ff8eff3a2ed3b24dbda"
+	bip39EnglishSHA256 = "2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff" +
+		"8eff3a2ed3b24dbda"
 )
 
 // words returns the BIP 39 English word list, after checking it is the

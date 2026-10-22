@@ -95,9 +95,7 @@ func TestSlowNotificationsStopAtDeadline(t *testing.T) {
 	require.NoError(t, err)
 	r.send(t, "payee", out.Send[0])
 
-	require.Equal(
-		t, FailureTimeout, nextAs[SessionFailed](t, share).Reason,
-	)
+	require.Equal(t, FailureTimeout, nextAs[SessionFailed](t, share).Reason)
 
 	// Message 4 alone is over 450 chunks of 20 bytes. The payee sent
 	// as many as fit in the ten seconds, plus the one-chunk ABORT, and
@@ -140,9 +138,7 @@ func TestSlowWritesStopAtDeadline(t *testing.T) {
 
 	find := startFind(t, world, payer)
 	nextAs[Connecting](t, find)
-	require.Equal(
-		t, FailureTimeout, nextAs[SessionFailed](t, find).Reason,
-	)
+	require.Equal(t, FailureTimeout, nextAs[SessionFailed](t, find).Reason)
 }
 
 // blockingRadio is a fake radio whose Notify blocks until the central it
