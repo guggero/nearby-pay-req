@@ -698,8 +698,8 @@ The payee:
     the file, or at its end, is not a read of the request.
 
 A payer that reads an NDEF URI record from a tag MUST process it as described
-in [Payment request payload](#payment-request-payload). A payer MAY skip the
-comparison code for NFC: the user physically touching the payee's device
+in [Payment request payload](#payment-request-payload). There is no
+comparison code over NFC: the user physically touching the payee's device
 provides the proximity binding that the code provides for BLE.
 
 A payer that supports both carriers SHOULD scan BLE and keep an NFC reader
