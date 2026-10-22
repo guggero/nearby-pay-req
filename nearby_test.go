@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/guggero/nearby-pay-req/nearbytest"
-	"github.com/guggero/nearby-pay-req/radio"
-	"github.com/guggero/nearby-pay-req/session"
-	"github.com/guggero/nearby-pay-req/wire"
+	"github.com/guggero/nearby-transfer/nearbytest"
+	"github.com/guggero/nearby-transfer/radio"
+	"github.com/guggero/nearby-transfer/session"
+	"github.com/guggero/nearby-transfer/wire"
 	"github.com/stretchr/testify/require"
 )
 

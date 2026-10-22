@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/guggero/nearby-pay-req/radio"
+	"github.com/guggero/nearby-transfer/radio"
 )
 
 const (

@@ -8,9 +8,9 @@ import (
 	"io"
 	"sync"
 
-	"github.com/guggero/nearby-pay-req/hce"
-	"github.com/guggero/nearby-pay-req/radio"
-	"github.com/guggero/nearby-pay-req/session"
+	"github.com/guggero/nearby-transfer/hce"
+	"github.com/guggero/nearby-transfer/radio"
+	"github.com/guggero/nearby-transfer/session"
 	"github.com/lightningnetwork/lnd/clock"
 )
 

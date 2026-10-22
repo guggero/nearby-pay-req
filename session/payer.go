@@ -5,7 +5,7 @@ import (
 	"crypto/subtle"
 
 	"github.com/flynn/noise"
-	"github.com/guggero/nearby-pay-req/wire"
+	"github.com/guggero/nearby-transfer/wire"
 	"github.com/lightningnetwork/lnd/tlv"
 )
 

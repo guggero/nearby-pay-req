@@ -1,8 +1,10 @@
-# nearby-pay-req
+# nearby-transfer
 
-A Go implementation of **Nearby Payment Request Exchange**: wallet-to-wallet
-sharing of a payment request over Bluetooth LE and NFC, so a payer doesn't
-have to point a camera at a QR code.
+Moving data between two phones held together, over Bluetooth LE and NFC,
+and its first use: **Nearby Payment Request Exchange**, wallet-to-wallet
+sharing of a payment request, so a payer doesn't have to point a camera at
+a QR code. This repository holds that protocol's specification and its Go
+implementation.
 
 The payee wallet keeps showing its receive screen. The payer wallet opens its
 send screen, finds the payee nearby and receives the exact string the QR code

@@ -4,9 +4,9 @@ import (
 	"crypto/rand"
 	"testing"
 
-	"github.com/guggero/nearby-pay-req/nearbytest"
-	"github.com/guggero/nearby-pay-req/session"
-	"github.com/guggero/nearby-pay-req/wire"
+	"github.com/guggero/nearby-transfer/nearbytest"
+	"github.com/guggero/nearby-transfer/session"
+	"github.com/guggero/nearby-transfer/wire"
 	"github.com/stretchr/testify/require"
 )
 

@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/guggero/nearby-pay-req/nearbytest"
+	"github.com/guggero/nearby-transfer/nearbytest"
 	"github.com/stretchr/testify/require"
 )
 

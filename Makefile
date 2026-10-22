@@ -1,4 +1,4 @@
-PKG := github.com/guggero/nearby-pay-req
+PKG := github.com/guggero/nearby-transfer
 
 # The formatting and lint tools are pinned in go.mod's tool block, so every
 # checkout runs the same versions. GOWORK=off keeps a workspace file of an

@@ -1005,7 +1005,7 @@ Future changes are accommodated as follows:
 
 ## Reference Implementations
 
-* [github.com/guggero/nearby-pay-req][impl]: a Go library with the chunk
+* [github.com/guggero/nearby-transfer][impl]: a Go library with the chunk
   layer, message layer, TLV, sans-IO sessions, a Type 4 Tag emulator, and
   an orchestrator (peer selection, timeouts, rate limiting) behind a small
   radio interface that Android and iOS code implements. Its session tests
@@ -1129,4 +1129,4 @@ messages:
 [schildbach]: https://github.com/bitcoin-wallet/bitcoin-wallet/wiki/Payment-Requests
 [numo]: https://github.com/cashubtc/Numo
 [nwcnfc]: https://github.com/agustinkassis/nwc-nfc
-[impl]: https://github.com/guggero/nearby-pay-req
+[impl]: https://github.com/guggero/nearby-transfer

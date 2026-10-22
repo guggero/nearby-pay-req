@@ -6,8 +6,8 @@ import (
 	"io"
 	"time"
 
-	"github.com/guggero/nearby-pay-req/session"
-	"github.com/guggero/nearby-pay-req/wire"
+	"github.com/guggero/nearby-transfer/session"
+	"github.com/guggero/nearby-transfer/wire"
 	"github.com/lightningnetwork/lnd/clock"
 )
 

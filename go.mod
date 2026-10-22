@@ -1,4 +1,4 @@
-module github.com/guggero/nearby-pay-req
+module github.com/guggero/nearby-transfer
 
 go 1.26.5
 

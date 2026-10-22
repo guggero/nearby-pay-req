@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btclog/v2"
-	"github.com/guggero/nearby-pay-req/nearbytest"
+	"github.com/guggero/nearby-transfer/nearbytest"
 	"github.com/stretchr/testify/require"
 )
 

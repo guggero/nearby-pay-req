@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/guggero/nearby-pay-req/ndef"
+	"github.com/guggero/nearby-transfer/ndef"
 	"github.com/stretchr/testify/require"
 )
 

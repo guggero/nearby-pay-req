@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/guggero/nearby-pay-req/nearbytest"
-	"github.com/guggero/nearby-pay-req/radio"
+	"github.com/guggero/nearby-transfer/nearbytest"
+	"github.com/guggero/nearby-transfer/radio"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/stretchr/testify/require"
 )
