@@ -379,7 +379,8 @@ prologue:
   generate a fresh ephemeral key pair for every session. No static keys are
   used.
 * Message 1 (`e`) carries an empty payload, so its body is exactly the
-  payer's 32-byte ephemeral public key.
+  payer's 32-byte ephemeral public key. A payee MUST fail the session with
+  `PROTOCOL_ERROR` if the body is any longer.
 * Message 2 (`e, ee`) carries the TLV stream `{commitment}` as its payload,
   encrypted as the Noise framework specifies.
 * `h` is the handshake hash after message 2 has been processed: the value
