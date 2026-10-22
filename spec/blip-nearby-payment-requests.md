@@ -343,7 +343,7 @@ odd type.
 | 2 | `payer_nonce` | message 3 | 32 bytes |
 | 4 | `payee_nonce` | message 4 | 32 bytes |
 | 6 | `payment_request` | message 4 | UTF-8 string, 1–8192 bytes |
-| 8 | `ack` | message 5 | 1 byte: `0` = received and usable, `1` = rejected |
+| 8 | `ack` | message 5 | 1 byte: `0` = received and usable, `1` = rejected; a receiver MUST treat any other value as `1` |
 
 Each message MUST carry every mandatory record listed for it, and no other
 even type. An even type that is defined but not listed for the message at
@@ -432,7 +432,7 @@ The payee:
   - MUST send `Nb` and `payment_request` in message 4, and only after it
     received message 3.
   - On message 5 with `ack` = 0, SHOULD tell the user the request was
-    delivered. On `ack` = 1, SHOULD treat the session as failed. A
+    delivered. On any other `ack`, SHOULD treat the session as failed. A
     delivery does not mean the payer's user picked this request; that is
     signalled separately with `CHOSEN`. The payee SHOULD keep sharing
     after a delivery until it receives `CHOSEN` or its user stops.
