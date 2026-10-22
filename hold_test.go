@@ -108,7 +108,7 @@ func TestTwoPayersTwoPayees(t *testing.T) {
 		// code is what it shows.
 		require.Len(t, offers, 2, "%v", order)
 		for s, code := range offers {
-			require.Equal(
+			require.Equalf(
 				t, payees[s.payee].shownCode(t), code,
 				"%v", order,
 			)
@@ -178,9 +178,7 @@ func TestHoldThenRetry(t *testing.T) {
 	payee.advance(payee.params.MinSessionInterval)
 	find := startFind(t, world, second)
 	nextAs[Connecting](t, find)
-	require.Equal(
-		t, FailurePeerBusy, nextAs[SessionFailed](t, find).Reason,
-	)
+	require.Equal(t, FailurePeerBusy, nextAs[SessionFailed](t, find).Reason)
 
 	payee.waitTick(t, payee.params.ComparisonTimeout)
 	payee.advance(payee.params.ComparisonTimeout)

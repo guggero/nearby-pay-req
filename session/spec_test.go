@@ -159,7 +159,7 @@ func TestSpecVectors(t *testing.T) {
 				for i, c := range chunks {
 					got[i] = hex.EncodeToString(c)
 				}
-				require.Equal(t, want, got, "chunk size %d", n)
+				require.Equalf(t, want, got, "chunk size %d", n)
 			}
 		})
 	}

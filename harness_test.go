@@ -195,9 +195,7 @@ func startCall[E any](t *testing.T,
 }
 
 // share starts a share on n.
-func (n *node) share(t *testing.T, request string,
-	nfc bool) *call[ShareEvent] {
-
+func (n *node) share(t *testing.T, request string, nfc bool) *call[ShareEvent] {
 	t.Helper()
 
 	return n.shareWith(t, request, ShareOptions{NFC: nfc})
@@ -282,9 +280,7 @@ func (r *rogueCallback) OnNotify(id string, connID int, chunk []byte) {
 }
 
 // OnDisconnected implements radio.CentralCallback.
-func (r *rogueCallback) OnDisconnected(id string, connID int,
-	reason string) {
-
+func (r *rogueCallback) OnDisconnected(id string, connID int, reason string) {
 	r.events <- event{
 		kind:   evDisconnected,
 		id:     id,

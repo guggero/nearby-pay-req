@@ -684,9 +684,11 @@ func (s *sharer) startSession(central string, conn *centralConn) (bool, error) {
 	s.codeAttempts = pruneBefore(
 		s.codeAttempts, now.Add(-s.params.SessionRateWindow),
 	)
-	tooSoon := len(s.sessionStarts) > 0 &&
-		now.Sub(s.sessionStarts[len(s.sessionStarts)-1]) <
-			s.params.MinSessionInterval
+	var tooSoon bool
+	if n := len(s.sessionStarts); n > 0 {
+		gap := now.Sub(s.sessionStarts[n-1])
+		tooSoon = gap < s.params.MinSessionInterval
+	}
 	limited := tooSoon ||
 		len(s.sessionStarts) >= s.params.MaxSessionsPerWindow ||
 		len(s.codeAttempts) >= s.params.MaxCodeAttemptsPerWindow ||
@@ -836,8 +838,8 @@ func (s *sharer) reviewAttempts() error {
 }
 
 // notifyAll sends messages to a payer, every chunk before until.
-func (s *sharer) notifyAll(central string, conn *centralConn,
-	messages [][]byte, until time.Time) error {
+func (s *sharer) notifyAll(central string, conn *centralConn, messages [][]byte,
+	until time.Time) error {
 
 	for _, msg := range messages {
 		if err := s.notify(central, conn, msg, until); err != nil {

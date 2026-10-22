@@ -190,9 +190,7 @@ func TestBusyRetry(t *testing.T) {
 
 	find := startFind(t, world, payer)
 	nextAs[Connecting](t, find)
-	require.Equal(
-		t, FailurePeerBusy, nextAs[SessionFailed](t, find).Reason,
-	)
+	require.Equal(t, FailurePeerBusy, nextAs[SessionFailed](t, find).Reason)
 
 	// Too early: the payee is not picked while the retry delay runs.
 	world.Advertise()

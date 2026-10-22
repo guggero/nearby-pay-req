@@ -19,11 +19,11 @@ func TestDecodeURIMessage(t *testing.T) {
 		wantErr bool
 	}{{
 		name:   "short record, no prefix",
-		msgHex: "d1010655" + "00" + hex.EncodeToString([]byte("bc1q:")),
+		msgHex: "d101065500" + hex.EncodeToString([]byte("bc1q:")),
 		want:   "bc1q:",
 	}, {
 		name:   "short record, https prefix",
-		msgHex: "d1010455" + "04" + hex.EncodeToString([]byte("a.b")),
+		msgHex: "d101045504" + hex.EncodeToString([]byte("a.b")),
 		want:   "https://a.b",
 	}, {
 		name:   "long record",
@@ -31,7 +31,7 @@ func TestDecodeURIMessage(t *testing.T) {
 		want:   "a",
 	}, {
 		name:   "with id",
-		msgHex: "d901020155" + "ff" + "0061",
+		msgHex: "d901020155ff0061",
 		want:   "a",
 	}, {
 		name:    "too short",
@@ -104,8 +104,8 @@ func TestDecodeURIMessage(t *testing.T) {
 // whatever it accepts encodes back to the same URI.
 func FuzzDecodeURIMessage(f *testing.F) {
 	for _, seed := range []string{
-		"d101065500626331713a", "c10100000002550061", "d901020155ff00" +
-			"61",
+		"d101065500626331713a", "c10100000002550061",
+		"d901020155ff0061",
 	} {
 
 		msg, err := hex.DecodeString(seed)

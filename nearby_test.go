@@ -92,13 +92,8 @@ func TestShareFind(t *testing.T) {
 	require.Len(t, strings.Fields(received.Code), 2)
 
 	// The payee showed the same code, then saw the acknowledgement.
-	require.Equal(
-		t, received.Code,
-		nextAs[PeerConnected](t, share).Code,
-	)
-	require.Equal(
-		t, received.Code, nextAs[Delivered](t, share).Code,
-	)
+	require.Equal(t, received.Code, nextAs[PeerConnected](t, share).Code)
+	require.Equal(t, received.Code, nextAs[Delivered](t, share).Code)
 
 	// The share keeps running for the next payer; cancelling stops the
 	// radio.
@@ -157,8 +152,7 @@ func TestPayloadInvalid(t *testing.T) {
 	find := startFind(t, world, payer)
 	nextAs[Connecting](t, find)
 	require.Equal(
-		t, FailurePayloadInvalid,
-		nextAs[SessionFailed](t, find).Reason,
+		t, FailurePayloadInvalid, nextAs[SessionFailed](t, find).Reason,
 	)
 
 	nextAs[PeerConnected](t, share)
@@ -178,10 +172,7 @@ func TestPayeeBusy(t *testing.T) {
 	payer := newNode(t, world, "payer")
 	other := newRogue(t, world, "other")
 
-	expectStarted(
-		t, payee.share(t, testRequest, false), true,
-		false,
-	)
+	expectStarted(t, payee.share(t, testRequest, false), true, false)
 
 	// The other payer opens a session and stalls.
 	other.connect(t, "payee")
@@ -189,10 +180,7 @@ func TestPayeeBusy(t *testing.T) {
 
 	find := startFind(t, world, payer, "other")
 	nextAs[Connecting](t, find)
-	require.Equal(
-		t, FailurePeerBusy,
-		nextAs[SessionFailed](t, find).Reason,
-	)
+	require.Equal(t, FailurePeerBusy, nextAs[SessionFailed](t, find).Reason)
 }
 
 // TestRateLimit checks that a payee refuses a second session within
@@ -255,8 +243,7 @@ func TestSuspiciousActivity(t *testing.T) {
 		}
 		r.disconnect("payee")
 		require.Equal(
-			t,
-			FailureConnectFailed,
+			t, FailureConnectFailed,
 			nextAs[SessionFailed](t, share).Reason,
 		)
 	}
@@ -279,10 +266,7 @@ func TestSessionTimeout(t *testing.T) {
 
 	payee.waitTick(t, defaultSessionTimeout)
 	payee.advance(defaultSessionTimeout)
-	require.Equal(
-		t, FailureTimeout,
-		nextAs[SessionFailed](t, share).Reason,
-	)
+	require.Equal(t, FailureTimeout, nextAs[SessionFailed](t, share).Reason)
 }
 
 // TestNFCShare checks the HCE side of a share: the tag serves the request
@@ -592,8 +576,7 @@ func TestDisconnectBeforeCodeIsNotSuspicious(t *testing.T) {
 		r.openSession(t, "payee")
 		r.disconnect("payee")
 		require.Equal(
-			t,
-			FailureConnectFailed,
+			t, FailureConnectFailed,
 			nextAs[SessionFailed](t, share).Reason,
 		)
 	}
@@ -635,8 +618,7 @@ func TestWriteFailureFailsFast(t *testing.T) {
 	find := startFind(t, world, payer)
 	nextAs[Connecting](t, find)
 	require.Equal(
-		t, FailureRadioError,
-		nextAs[SessionFailed](t, find).Reason,
+		t, FailureRadioError, nextAs[SessionFailed](t, find).Reason,
 	)
 }
 
@@ -652,9 +634,7 @@ func TestScanRestartsAfterBluetoothOff(t *testing.T) {
 	find := n.find(t)
 	nextAs[Scanning](t, find)
 
-	n.radio.SetStatus(
-		nearbytest.DefaultStatus &^ radio.StatusPoweredOn,
-	)
+	n.radio.SetStatus(nearbytest.DefaultStatus &^ radio.StatusPoweredOn)
 	n.mgr.StatusChanged()
 	require.Equal(
 		t, BluetoothOff,
