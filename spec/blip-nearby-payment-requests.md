@@ -129,7 +129,8 @@ The payee:
     characteristic or the descriptor. Pairing or bonding MUST NOT be
     initiated or required.
   - MUST NOT expose a readable characteristic in this service.
-  - MUST reject prepared (long) writes to `rx`.
+  - MUST reject prepared (long) writes to `rx`, answering a Prepare Write
+    Request with the ATT error *Request Not Supported* (`0x06`).
 
 The payer:
   - MUST NOT initiate pairing or bonding with the payee.
