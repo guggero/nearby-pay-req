@@ -485,9 +485,9 @@ The payer:
   - MUST disconnect after sending message 5, and SHOULD stop scanning.
 
 Either side:
-  - MUST fail the session if it does not complete within a session timeout,
-    measured from the payer's write of message 1 to the payee's receipt of
-    message 5. 10 seconds is RECOMMENDED. That assumes an ATT MTU well
+  - MUST fail the session if it does not complete within a session timeout.
+    Each side measures it from its own message 1, sent or received, to its
+    own message 5. 10 seconds is RECOMMENDED. That assumes an ATT MTU well
     above the default of 23: message 4 for an 8192-byte request is 8248
     bytes, or 459 chunks at the smallest chunk size, and many phones
     deliver one notification per connection interval, which at 30 ms is
