@@ -163,8 +163,11 @@ The payer:
     moving average with a new-sample weight of 0.3 is RECOMMENDED), and then
     connect to the payee with the strongest average.
   - SHOULD NOT connect to a payee whose averaged RSSI is below a proximity
-    floor (−75 dBm is RECOMMENDED). It SHOULD instead tell the user to move
-    closer.
+    floor (−75 dBm is RECOMMENDED). It SHOULD instead tell the user to
+    bring the phones together, as a prompt rather than a failure. The
+    floor keeps a payer from picking a payee across the room; it does not
+    ask the phones to touch, and a phone in a case or a pocket can read
+    −80 dBm at a metre.
   - MUST NOT reconnect to a payee whose request the user said did not match
     (see [Comparison code](#comparison-code)) for the rest of the current
     search.
